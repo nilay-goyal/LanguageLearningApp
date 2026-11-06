@@ -34,6 +34,13 @@ const EARLY_MARGIN = 0.05;
 /** Disagreeing captions needed before a placed file is moved. */
 const REPLACE_AFTER = 3;
 
+/** Whether cues span enough time to be a whole episode's file. */
+export function isEpisodeLength(cues: Cue[]): boolean {
+  const first = cues[0];
+  const last = cues.at(-1);
+  return !!first && !!last && last.end - first.begin >= EPISODE_FILE_SECONDS;
+}
+
 export const normText = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 
 export class CueStore {
@@ -43,13 +50,11 @@ export class CueStore {
 
   /** Returns false when the file was already stored. */
   addChunk(cues: Cue[]): boolean {
-    const first = cues[0];
-    const last = cues.at(-1);
-    if (!first || !last) return false;
+    if (cues.length === 0) return false;
     const key = cues.map((c) => `${c.begin}|${c.text}`).join('\n');
     if (this.chunks.some((c) => c.key === key)) return false;
 
-    const isEpisode = last.end - first.begin >= EPISODE_FILE_SECONDS;
+    const isEpisode = isEpisodeLength(cues);
     // Only one episode file is live. A later one (the next episode prefetched, or
     // the closed-caption track) waits until a displayed caption shows it is in use.
     const live = isEpisode && !this.chunks.some((c) => c.isEpisode && c.offset !== null);

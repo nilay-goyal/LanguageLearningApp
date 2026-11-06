@@ -175,6 +175,33 @@ test('turns English on when subtitles are off, and restores on switching off', a
   await expect.poll(() => page.evaluate(() => (window as any).fake.currentTrack())).toBe('off');
 });
 
+test('keeps trying when the player ignores the first switch', async () => {
+  const page = await openWatch({ initialTrack: 'off', ignoreChangesMs: 6000 });
+  await expect.poll(() => captionText(page), { timeout: 20_000 }).toMatch(/^en1 line/);
+  expect(await page.evaluate(() => (window as any).fake.currentTrack())).toBe('en');
+});
+
+test('gets the file again if English was on but its download was missed', async () => {
+  const page = await openWatch({ skipFirstLoad: true });
+  await expect.poll(() => captionText(page), { timeout: 20_000 }).toMatch(/^en1 line/);
+  expect(await page.evaluate(() => (window as any).fake.currentTrack())).toBe('en');
+});
+
+test('keeps a file fetched just before the player URL appears', async () => {
+  const page = await openWatch({}, '/browse');
+  await page.waitForTimeout(1000);
+  expect(await captionText(page)).toBe('');
+  await page.evaluate(() => { history.pushState({}, '', '/watch/1'); });
+  await expectCaption(page, /^en line/);
+});
+
+test('shows the version on the development label', async () => {
+  const page = await openWatch();
+  await expectCaption(page, /^en1 line/);
+  const label = await page.evaluate(() => document.getElementById('subtitle-learning-root')!.shadowRoot!.querySelector<HTMLElement>('[data-testid="debug-label"]')!.innerText);
+  expect(label).toMatch(/^v0\.2\.0 \d\d-\d\d \d\d:\d\d · timeline · 1\/1 files/);
+});
+
 test('leaves Netflix alone when the title has no English track', async () => {
   const page = await openWatch({ initialTrack: 'fr', hasEnglish: false });
   await page.waitForTimeout(2000);

@@ -32,9 +32,13 @@ export interface FakeOptions {
   initialTrack: 'en' | 'off' | 'fr';
   /** Whether the title has any English track. */
   hasEnglish: boolean;
+  /** Track changes are silently ignored for this long, like a player still starting up. */
+  ignoreChangesMs?: number;
+  /** The first file download is never seen, as if it happened before anyone listened. */
+  skipFirstLoad?: boolean;
 }
 
-export function fakeWatchPage({ initialTrack, hasEnglish }: FakeOptions): string {
+export function fakeWatchPage({ initialTrack, hasEnglish, ignoreChangesMs = 0, skipFirstLoad = false }: FakeOptions): string {
   return `<!doctype html>
 <html><head><title>Fake player</title><style>
   body { margin: 0; background: #000; }
@@ -88,12 +92,12 @@ export function fakeWatchPage({ initialTrack, hasEnglish }: FakeOptions): string
     getVideoPlayerBySessionId: () => ({
       getTimedTextTrackList: () => tracks,
       getTimedTextTrack: () => current,
-      setTimedTextTrack: (t) => { current = t; window.fake.trackLog.push(t.trackId); load(t); },
+      setTimedTextTrack: (t) => { if (performance.now() < ${ignoreChangesMs}) return; current = t; window.fake.trackLog.push(t.trackId); load(t); },
     }),
   } }) } } } };
   window.fake.currentTrack = () => current.trackId;
   window.fake.reload = () => load(current);
-  load(current);
+  if (!${skipFirstLoad}) load(current);
 
   const host = document.querySelector('.player-timedtext');
   let shown = null;

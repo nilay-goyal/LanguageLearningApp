@@ -14,7 +14,8 @@ export const COMMAND_MESSAGE = 'subtitle-learning:command';
 
 export interface CommandMessage {
   type: typeof COMMAND_MESSAGE;
-  command: 'ensure-english' | 'restore-track';
+  /** refresh-track switches the English track off and on, which makes Netflix download its file again. */
+  command: 'ensure-english' | 'restore-track' | 'refresh-track';
 }
 
 /** Page to content script: the outcome of ensure-english. */

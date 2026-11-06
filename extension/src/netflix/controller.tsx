@@ -12,7 +12,7 @@ import {
 } from '../messages';
 import { Caption, CAPTION_CSS, type CaptionStyle, DEFAULT_CAPTION_STYLE } from '../overlay/Caption';
 import { buildBlocks, chooseSource, type Placement, syncSummary } from '../overlay/display';
-import { CueStore } from '../subtitles/cueStore';
+import { CueStore, isEpisodeLength } from '../subtitles/cueStore';
 import { parseTtml, ttmlLanguage } from '../subtitles/ttml';
 
 const NATIVE_SELECTOR = '.player-timedtext';
@@ -24,6 +24,9 @@ const MEASURE_MS = 250;
 /** How long Netflix's caption is treated as stale after a seek or a start. */
 const SETTLE_MS = 600;
 const SYNC_SAMPLES = 200;
+/** While no subtitle file has arrived, how often to retry and for how many times (5 minutes covers pre-roll ads). */
+const RECOVER_EVERY_MS = 4000;
+const MAX_RECOVERIES = 75;
 
 const log = (...args: unknown[]) => {
   if (import.meta.env.DEV) console.debug('[subtitle-learning]', ...args);
@@ -51,6 +54,9 @@ export class CaptionController {
   private settleUntil = 0;
   private syncErrors: number[] = [];
   private lastKey = '';
+  private trackStatus: TrackStatusMessage['status'] | null = null;
+  private lastRecovery = 0;
+  private recoveries = 0;
 
   private hideStyle = document.createElement('style');
   private host = document.createElement('div');
@@ -71,6 +77,7 @@ export class CaptionController {
     if (this.running || this.failed) return;
     this.running = true;
     this.settle();
+    this.beginTrackRecovery();
     this.command('ensure-english');
     this.measureTimer = setInterval(() => this.guard(() => this.measure()), MEASURE_MS);
     this.frameId = requestAnimationFrame(this.frame);
@@ -117,13 +124,37 @@ export class CaptionController {
     this.settleUntil = performance.now() + SETTLE_MS;
   }
 
+  private beginTrackRecovery(): void {
+    this.lastRecovery = performance.now();
+    this.recoveries = 0;
+  }
+
+  /**
+   * Netflix can ignore or undo a track change while the player starts or during a
+   * pre-roll ad, and a file can download before we are listening. So until a file
+   * arrives, keep asking; if English already looks on, make Netflix fetch it again.
+   */
+  private recoverTrack(): void {
+    if (this.store.totalChunks > 0 || this.passthrough || !this.watchedVideo) return;
+    if (!location.pathname.startsWith('/watch') || this.recoveries >= MAX_RECOVERIES) return;
+    const now = performance.now();
+    if (now - this.lastRecovery < RECOVER_EVERY_MS) return;
+    this.lastRecovery = now;
+    this.recoveries++;
+    this.command(this.trackStatus === 'kept' ? 'refresh-track' : 'ensure-english');
+  }
+
   private checkEpisode(): void {
     if (location.pathname === this.episode) return;
+    const wasWatching = this.episode.startsWith('/watch');
     this.episode = location.pathname;
-    this.store.nextEpisode();
+    // Coming from the browse page, a file already fetched for this title stays.
+    if (wasWatching) this.store.nextEpisode();
     this.passthrough = false;
+    this.trackStatus = null;
     this.syncErrors = [];
     this.settle();
+    this.beginTrackRecovery();
     log('episode changed');
     if (this.running && location.pathname.startsWith('/watch')) this.command('ensure-english');
   }
@@ -134,15 +165,18 @@ export class CaptionController {
     try {
       if (data?.type === TRACK_STATUS_MESSAGE) {
         log('track status:', data.status);
+        this.trackStatus = data.status;
         this.passthrough = data.status === 'no-english';
         return;
       }
       if (data?.type !== TTML_MESSAGE) return;
       this.checkEpisode();
-      // Skip trailers on the browse page and other languages' tracks.
       const language = ttmlLanguage(data.xml);
-      if (!location.pathname.startsWith('/watch') || (language && !language.startsWith('en'))) return;
+      if (language && !language.startsWith('en')) return;
       const cues = parseTtml(data.xml);
+      // Away from the player, keep only episode files (Netflix can fetch one just
+      // before the URL changes), which skips the short trailers on the browse page.
+      if (!location.pathname.startsWith('/watch') && !isEpisodeLength(cues)) return;
       if (this.store.addChunk(cues)) {
         log(`file ${this.store.totalChunks}: ${cues.length} cues, ${cues[0]?.begin.toFixed(2)}–${cues.at(-1)?.end.toFixed(2)} s, video at ${data.currentTime?.toFixed(2)} s`);
       }
@@ -236,6 +270,7 @@ export class CaptionController {
     }
     this.watchNative();
     this.sampleNativeStyle();
+    this.recoverTrack();
   }
 
   private frame = (): void => {
@@ -280,6 +315,7 @@ export class CaptionController {
   private debugLabel(source: string, t: number): string {
     const sync = syncSummary(this.syncErrors);
     const syncText = sync ? `sync ${sync.median}/${sync.p95} ms` : 'sync –';
-    return `${source} · ${this.store.describe()} · ${syncText} · ${t.toFixed(1)} s`;
+    const build = `v${browser.runtime.getManifest().version} ${__BUILD_TIME__}`;
+    return `${build} · ${source} · ${this.store.describe()} · track ${this.trackStatus ?? '?'} · ${syncText} · ${t.toFixed(1)} s`;
   }
 }

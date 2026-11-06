@@ -22,6 +22,7 @@ interface NetflixPlayer {
 const MAX_SUBTITLE_BYTES = 8_000_000;
 const ENSURE_RETRY_MS = 500;
 const ENSURE_ATTEMPTS = 40;
+const REFRESH_GAP_MS = 300;
 
 function currentPlayer(): NetflixPlayer | null {
   try {
@@ -119,9 +120,25 @@ function hookTrackControl() {
     } catch {}
   };
 
+  const refresh = () => {
+    try {
+      const player = currentPlayer();
+      const current = player?.getTimedTextTrack();
+      const off = player?.getTimedTextTrackList().find((t) => t.isNoneTrack);
+      if (!player || !current || !off) return;
+      player.setTimedTextTrack(off);
+      setTimeout(() => {
+        try {
+          player.setTimedTextTrack(current);
+        } catch {}
+      }, REFRESH_GAP_MS);
+    } catch {}
+  };
+
   window.addEventListener('message', (event: MessageEvent<CommandMessage>) => {
     if (event.source !== window || event.data?.type !== COMMAND_MESSAGE) return;
     if (event.data.command === 'ensure-english') ensureEnglish();
+    else if (event.data.command === 'refresh-track') refresh();
     else restore();
   });
 }
