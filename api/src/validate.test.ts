@@ -33,6 +33,12 @@ describe('unitProblem', () => {
     expect(unitProblem(unit(0, 2), ['Go', 'home'])).toBeNull();
   });
 
+  it('rejects a unit whose positions do not match the words it says it replaces', () => {
+    const line = ['On', 'the', 'kitchen', 'table', 'next', 'to', 'it', 'now'];
+    expect(unitProblem({ ...unit(0, 3, 'Sur la table'), english: 'On the kitchen table' }, line)).toBe('positions do not match');
+    expect(unitProblem({ ...unit(0, 4, 'Sur la table'), english: 'On the kitchen table' }, line)).toBeNull();
+  });
+
   it('rejects a unit that is the same as the English', () => {
     expect(unitProblem(unit(4, 6, 'The OLD,'), WORDS)).toBe('same as English');
   });

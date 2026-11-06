@@ -21,8 +21,9 @@ export interface SessionDeps {
   save(state: EngineState): void;
 }
 
-/** Lines per request. */
+/** Lines per request. The first is small, so French starts soon after an episode does. */
 const BATCH_LINES = 40;
+const FIRST_BATCH_LINES = 10;
 /** How many lines S6r plans past the playhead. */
 const PLAN_AHEAD_LINES = 80;
 const LOOKAHEAD_LINES = 99;
@@ -82,6 +83,7 @@ export class LearningSession {
   private unsaved = 0;
   private costUsd = 0;
   private cachedLines = 0;
+  private requests = 0;
 
   pace = 1;
   relaxTicks = false;
@@ -96,6 +98,7 @@ export class LearningSession {
     this.videoId = videoId;
     this.results.clear();
     this.attempts.clear();
+    this.requests = 0;
     this.glossary = {};
     this.shown.clear();
     this.setLines([], 0);
@@ -213,7 +216,7 @@ export class LearningSession {
   private pump(t: number, now: number): void {
     if (this.inFlight || this.stopped || now < this.retryAt) return;
     const start = this.firstLineAfter(t);
-    const batch = this.nextBatch(start) ;
+    const batch = this.nextBatch(start, this.requests === 0 ? FIRST_BATCH_LINES : BATCH_LINES);
     if (batch.length === 0) return;
 
     const request: TranslateRequest = {
@@ -229,6 +232,7 @@ export class LearningSession {
     };
 
     this.inFlight = true;
+    this.requests++;
     void this.deps.translate(request).then((outcome) => {
       this.inFlight = false;
       if (outcome.ok) {
@@ -247,7 +251,7 @@ export class LearningSession {
     });
   }
 
-  private nextBatch(start: number): number[] {
+  private nextBatch(start: number, size: number): number[] {
     const batch: number[] = [];
     const seen = new Set<string>();
     const consider = (i: number) => {
@@ -256,9 +260,9 @@ export class LearningSession {
       seen.add(line.hash);
       batch.push(i);
     };
-    for (let i = start; i < this.lines.length && batch.length < BATCH_LINES; i++) consider(i);
+    for (let i = start; i < this.lines.length && batch.length < size; i++) consider(i);
     // Then whatever is behind the playhead, for skipping back.
-    for (let i = 0; i < start && batch.length < BATCH_LINES; i++) consider(i);
+    for (let i = 0; i < start && batch.length < size; i++) consider(i);
     return batch;
   }
 

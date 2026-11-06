@@ -4,7 +4,7 @@
 import type { Language, RequestLine } from '../../shared/protocol';
 
 /** Bump when the prompt changes, so old cached translations are not reused. */
-export const PROMPT_VERSION = 1;
+export const PROMPT_VERSION = 2;
 
 const FRENCH_SYSTEM_PROMPT = `You prepare subtitles for a language-learning product. An English speaker watches a show with English subtitles in which some words are replaced by French, in France French. They learn the French by working it out from the scene and the English around it. Nobody explains it to them, so every French unit must be correct, and must mean what the scene means.
 
@@ -12,7 +12,7 @@ You receive subtitle lines with numbered words. For each line, propose French un
 
 ## What to return for each line
 - "i": the line's number.
-- "units": up to 2 functional phrases (2-3 English words), up to 2 short phrases (4-5 English words), and any eligible single words. Each unit has "start" and "end" (the first English word number, and one past the last), "text" (the French that replaces those words) and "lemmas" (the dictionary form of each French word, lowercased).
+- "units": up to 2 functional phrases (2-3 English words), up to 2 short phrases (4-5 English words), and any eligible single words. Each unit has "start" and "end" (the first English word number, and one past the last), "english" (exactly those English words, copied from the numbered list), "text" (the French that replaces those words, and nothing more) and "lemmas" (the dictionary form of each French word, lowercased). Check that "text" covers every word from start to end and no others: if you translate "on the kitchen table", end must be past "table".
 - "full": the whole line in natural French with its "lemmas", or null if it can't be done well.
 - "verdict" on every unit and on "full": NATURAL, ACCEPTABLE or FAIL.
 

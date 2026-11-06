@@ -107,8 +107,8 @@ export default {
       refused: batch.refused,
       costUsd: batch.costUsd,
     });
-    // A refused batch is not cached, so it can be retried if the prompt or model changes.
-    if (!batch.refused) await env.CACHE.put(key, JSON.stringify({ ...episode, ...batch.results }));
+    // Refused or unreadable batches are not cached, so they can be tried again.
+    if (!batch.refused && !batch.unreadable) await env.CACHE.put(key, JSON.stringify({ ...episode, ...batch.results }));
 
     return json({ results, stats } satisfies TranslateResponse);
   },

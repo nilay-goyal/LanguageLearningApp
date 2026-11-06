@@ -19,6 +19,7 @@ const OutputSchema = z.object({
         z.object({
           start: z.number().int(),
           end: z.number().int(),
+          english: z.string(),
           text: z.string(),
           lemmas: z.array(z.string()),
           verdict: VERDICT,
@@ -62,6 +63,9 @@ export interface BatchResult {
   refused: boolean;
   costUsd: number;
   usage: Usage;
+  /** Why Claude stopped, and whether its reply could be read. */
+  stopReason: string | null;
+  unreadable: boolean;
 }
 
 export async function translateBatch(
@@ -84,13 +88,15 @@ export async function translateBatch(
   const costUsd = costOf(model, response.usage);
   const empty = validateLines([], lines).results;
   if (response.stop_reason === 'refusal' || response.stop_reason === 'max_tokens') {
-    return { results: empty, dropped: 0, refused: response.stop_reason === 'refusal', costUsd, usage: response.usage };
+    const refused = response.stop_reason === 'refusal';
+    return { results: empty, dropped: 0, refused, costUsd, usage: response.usage, stopReason: response.stop_reason, unreadable: !refused };
   }
 
   const text = response.content.flatMap((block) => (block.type === 'text' ? [block.text] : [])).join('');
   const parsed = OutputSchema.safeParse(safeJson(text));
-  if (!parsed.success) return { results: empty, dropped: lines.length, refused: false, costUsd, usage: response.usage };
-  return { ...validateLines(parsed.data.lines, lines), refused: false, costUsd, usage: response.usage };
+  const stopReason = response.stop_reason;
+  if (!parsed.success) return { results: empty, dropped: lines.length, refused: false, costUsd, usage: response.usage, stopReason, unreadable: true };
+  return { ...validateLines(parsed.data.lines, lines), refused: false, costUsd, usage: response.usage, stopReason, unreadable: false };
 }
 
 function safeJson(text: string): unknown {

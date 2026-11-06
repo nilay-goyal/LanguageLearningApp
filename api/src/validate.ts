@@ -7,6 +7,8 @@ export type Verdict = 'NATURAL' | 'ACCEPTABLE' | 'FAIL';
 export interface RawUnit {
   start: number;
   end: number;
+  /** The words Claude says it is replacing, to catch miscounted positions. */
+  english?: string;
   text: string;
   lemmas: string[];
   verdict: Verdict;
@@ -36,6 +38,7 @@ export function unitProblem(unit: RawUnit, words: string[]): string | null {
   if (!unit.text.trim()) return 'empty';
 
   const english = words.slice(unit.start, unit.end);
+  if (unit.english !== undefined && comparable(unit.english) !== comparable(english.join(' '))) return 'positions do not match';
   if (comparable(unit.text) === comparable(english.join(' '))) return 'same as English';
   // Names only: every word capitalised, ignoring the line's first word.
   if (english.every((w, k) => isCapitalised(w) && !(unit.start === 0 && k === 0))) return 'name only';

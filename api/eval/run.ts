@@ -84,6 +84,7 @@ async function main() {
       dropped += out.dropped;
       if (out.refused) refused++;
       cacheRead += out.usage.cache_read_input_tokens ?? 0;
+      console.log(`  batch ${i}: stop ${out.stopReason}, unreadable ${out.unreadable}, output tokens ${out.usage.output_tokens}`);
       for (const line of batch) {
         for (const unit of out.results[line.hash]?.units ?? []) {
           if (unit.end - unit.start <= 3) glossary[line.words.slice(unit.start, unit.end).join(' ').toLowerCase()] = unit.text;
