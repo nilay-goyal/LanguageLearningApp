@@ -11,7 +11,7 @@ export type ModelId = 'claude-opus-5-5' | 'claude-sonnet-5-5' | 'claude-haiku-5-
 
 const VERDICT = z.enum(['NATURAL', 'ACCEPTABLE', 'FAIL']);
 
-const OutputSchema = z.object({
+export const OutputSchema = z.object({
   lines: z.array(
     z.object({
       i: z.number().int(),

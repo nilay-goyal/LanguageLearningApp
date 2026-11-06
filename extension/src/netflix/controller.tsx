@@ -15,12 +15,15 @@ import { buildBlocks, chooseSource, type Placement, syncSummary } from '../overl
 import { buildLines } from '../learning/lines';
 import { deserializeState, LearningSession, serializeState, type TranslateOutcome } from '../learning/session';
 import {
+  DEV_COMMAND_MESSAGE,
   EXPORT_LINES_MESSAGE,
   JUMP_KEY,
   type JumpRequest,
   LEARNER_KEY,
   PACE_KEY,
   RELAX_TICKS_KEY,
+  STATUS_MESSAGE,
+  type TabStatus,
   TRANSLATE_MESSAGE,
 } from '../settings';
 import { CueStore, isEpisodeLength } from '../subtitles/cueStore';
@@ -98,8 +101,13 @@ export class CaptionController {
       const jump = changes[JUMP_KEY]?.newValue as JumpRequest | undefined;
       if (jump) this.session?.jump(jump.hour, jump.reset, this.watchedVideo?.currentTime ?? 0);
     });
-    browser.runtime.onMessage.addListener((message: { type?: string }) => {
-      if (message?.type === EXPORT_LINES_MESSAGE) this.exportLines();
+    browser.runtime.onMessage.addListener((message: { type?: string }, _sender, sendResponse) => {
+      if (message?.type === EXPORT_LINES_MESSAGE) {
+        sendResponse(this.exportLines());
+      } else if (message?.type === STATUS_MESSAGE) {
+        const progress = this.session?.progress() ?? { lines: 0, translated: 0, stopped: null };
+        sendResponse({ ...progress, running: this.running } satisfies TabStatus);
+      }
     });
     void this.loadLearner();
   }
@@ -120,14 +128,20 @@ export class CaptionController {
   }
 
   /** Dev panel: saves this episode's English lines to a local file, for the model eval. */
-  private exportLines(): void {
+  private exportLines(): number {
     const lines = this.session?.exportLines() ?? [];
+    if (lines.length === 0) return 0;
     const blob = new Blob([JSON.stringify({ video: this.episode, lines })], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob);
+    link.href = url;
     link.download = `subtitle-lines${this.episode.replaceAll('/', '-')}.json`;
+    // The link must be on the page, and the file must outlive the click.
+    document.body.append(link);
     link.click();
-    URL.revokeObjectURL(link.href);
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    return lines.length;
   }
 
   private onKey(event: KeyboardEvent, down: boolean): void {
@@ -227,6 +241,16 @@ export class CaptionController {
     if (event.source !== window) return;
     const data = event.data;
     try {
+      if (import.meta.env.DEV && (data as { type?: string })?.type === DEV_COMMAND_MESSAGE) {
+        const command = data as unknown as { action: string; hour?: number };
+        if (command.action === 'export') this.exportLines();
+        if (command.action === 'jump' && this.session) {
+          this.session.relaxTicks = (command.hour ?? 0) > 0;
+          void browser.storage.local.set({ [RELAX_TICKS_KEY]: this.session.relaxTicks });
+          this.session.jump(command.hour ?? 0, false, this.watchedVideo?.currentTime ?? 0);
+        }
+        return;
+      }
       if (data?.type === TRACK_STATUS_MESSAGE) {
         log('track status:', data.status);
         this.trackStatus = data.status;
@@ -371,6 +395,8 @@ export class CaptionController {
   };
 
   private draw(): void {
+    // After the extension is reloaded, this copy of the code can no longer use its APIs.
+    if (!browser.runtime?.id) throw new Error('extension was reloaded; reload this tab');
     if (import.meta.env.DEV && document.documentElement.dataset.subtitleLearningFail) throw new Error('forced failure');
     if (this.watchedVideo === null) this.measure();
     const video = this.watchedVideo;

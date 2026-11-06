@@ -18,6 +18,7 @@ const DATA_DIR = 'eval/data';
 const JUDGE_MODEL = 'claude-opus-5-5';
 const BATCH = 40;
 const BLIND_ITEMS = 100;
+const PARALLEL = 6;
 
 const Verdicts = z.object({
   verdicts: z.array(z.object({ id: z.string(), verdict: z.enum(['NATURAL', 'ACCEPTABLE', 'GRAMMAR_ERROR', 'MISLEADING', 'INCOMPREHENSIBLE']), reason: z.string() })),
@@ -93,7 +94,10 @@ async function main() {
 
   // Mixed across models, so the judge can't tell whose work it is reading.
   const queue = shuffled(items, (i) => i.id);
-  for (let i = 0; i < queue.length; i += BATCH) {
+  const starts: number[] = [];
+  for (let i = 0; i < queue.length; i += BATCH) starts.push(i);
+  let done = 0;
+  const judgeBatch = async (i: number) => {
     const batch = queue.slice(i, i + BATCH);
     const response = await client.messages.parse({
       model: JUDGE_MODEL,
@@ -109,12 +113,37 @@ async function main() {
     });
     cost += costOf(JUDGE_MODEL, response.usage);
     for (const v of response.parsed_output?.verdicts ?? []) verdicts.set(v.id, v);
-    console.log(`judged ${Math.min(i + BATCH, queue.length)}/${queue.length}`);
-  }
+    done += batch.length;
+    console.log(`judged ${done}/${queue.length}`);
+  };
+  const worker = async () => {
+    for (let next = starts.shift(); next !== undefined; next = starts.shift()) {
+      await judgeBatch(next).catch((error: Error) => console.log('judge batch failed', error.message.slice(0, 100)));
+    }
+  };
+  await Promise.all(Array.from({ length: PARALLEL }, worker));
 
   console.log(`\njudge cost $${cost.toFixed(4)}\n`);
   const passes = (id: string) => ['NATURAL', 'ACCEPTABLE'].includes(verdicts.get(id)?.verdict ?? '');
-  for (const model of new Set(items.map((i) => i.model))) {
+  const summaries: { model: string; costPerEpisode: number }[] = JSON.parse(readFileSync(join(DATA_DIR, 'summary.json'), 'utf8'));
+  const table = [...new Set(items.map((i) => i.model))].map((model) => {
+    const mine = items.filter((i) => i.model === model && verdicts.has(i.id));
+    const score = (subset: Item[]) => `${subset.filter((i) => passes(i.id)).length}/${subset.length}`;
+    const count = (name: string) => mine.filter((i) => verdicts.get(i.id)!.verdict === name).length;
+    return {
+      model,
+      '$/episode': summaries.find((s) => s.model === model)?.costPerEpisode.toFixed(2),
+      phrases: score(mine.filter((i) => i.kind !== 'full')),
+      full: score(mine.filter((i) => i.kind === 'full')),
+      natural: `${Math.round((count('NATURAL') / Math.max(1, mine.length)) * 100)}%`,
+      grammar: count('GRAMMAR_ERROR'),
+      misleading: count('MISLEADING'),
+      lost: count('INCOMPREHENSIBLE'),
+    };
+  });
+  console.table(table);
+  writeFileSync(join(DATA_DIR, 'judge-table.json'), JSON.stringify(table, null, 1));
+  for (const model of [] as string[]) {
     const mine = items.filter((i) => i.model === model && verdicts.has(i.id));
     const line = (label: string, subset: Item[]) =>
       `${label} ${subset.filter((i) => passes(i.id)).length}/${subset.length} (${Math.round((subset.filter((i) => passes(i.id)).length / Math.max(1, subset.length)) * 100)}%)`;

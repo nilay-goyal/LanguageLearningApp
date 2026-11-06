@@ -47,6 +47,13 @@ export default defineBackground(() => {
     return true;
   });
 
+  // After a development reload, old tabs are left running dead code. Reload them.
+  browser.runtime.onInstalled.addListener(async ({ reason }) => {
+    if (!import.meta.env.DEV || reason !== 'update') return;
+    const tabs = await browser.tabs.query({ url: 'https://www.netflix.com/*' });
+    for (const tab of tabs) if (tab.id !== undefined) void browser.tabs.reload(tab.id);
+  });
+
   browser.storage.onChanged.addListener((changes, area) => {
     const change = changes[ENABLED_KEY];
     if (area === 'local' && change) void showState(isEnabledValue(change.newValue));

@@ -105,7 +105,9 @@ function hookTrackControl() {
       switched = true;
       report('switched');
     } catch {
-      report('unavailable');
+      // The player object can exist before it's ready, so this isn't final.
+      if (attempt < ENSURE_ATTEMPTS) retry = setTimeout(() => ensureEnglish(attempt + 1), ENSURE_RETRY_MS);
+      else report('unavailable');
     }
   };
 

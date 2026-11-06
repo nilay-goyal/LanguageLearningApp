@@ -23,5 +23,17 @@ export interface JumpRequest {
 
 /** Sent from the dev panel to the Netflix tab. */
 export const EXPORT_LINES_MESSAGE = 'subtitle-learning:export-lines';
+/** Dev panel asks the Netflix tab how it's doing. */
+export const STATUS_MESSAGE = 'subtitle-learning:status';
+/** Development only: a command from the page, so test tools can reach the session. */
+export const DEV_COMMAND_MESSAGE = 'subtitle-learning:dev';
+
+export interface TabStatus {
+  /** Whether an episode's subtitles have been captured. */
+  lines: number;
+  translated: number;
+  stopped: string | null;
+  running: boolean;
+}
 /** Sent from the content script to the background script. */
 export const TRANSLATE_MESSAGE = 'subtitle-learning:translate';

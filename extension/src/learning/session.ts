@@ -305,6 +305,11 @@ export class LearningSession {
     return this.lines.map((line, i) => ({ text: line.text, prev: this.lines[i - 1]?.text, next: this.lines[i + 1]?.text }));
   }
 
+  /** How far along translation is, for the dev panel. */
+  progress(): { lines: number; translated: number; stopped: string | null } {
+    return { lines: this.lines.length, translated: this.lines.filter((l) => this.results.has(l.hash)).length, stopped: this.stopped };
+  }
+
   /** Summary for the development label. */
   describe(): string {
     const h = hoursOf(this.state);

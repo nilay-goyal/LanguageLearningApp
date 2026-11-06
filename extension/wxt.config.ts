@@ -11,7 +11,7 @@ export default defineConfig({
   manifest: ({ mode }) => ({
     name: 'Subtitle Learning (dev)',
     description: 'Learn French or Spanish while you watch. Your subtitles change a little at a time.',
-    permissions: ['storage'],
+    permissions: ['storage', 'tabs'],
     action: { default_title: 'Subtitle Learning' },
     // Narrowed to the deployed Worker's own address before any public release.
     host_permissions: [

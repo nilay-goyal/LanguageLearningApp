@@ -246,7 +246,7 @@ test('shows the version on the development label', async () => {
   const page = await openWatch();
   await expectCaption(page, /^en1 line/);
   const label = await page.evaluate(() => document.getElementById('subtitle-learning-root')!.shadowRoot!.querySelector<HTMLElement>('[data-testid="debug-label"]')!.innerText);
-  expect(label).toMatch(/^v0\.3\.0 \d\d-\d\d \d\d:\d\d · timeline · 1\/1 files/);
+  expect(label).toMatch(/^v0\.3\.1 \d\d-\d\d \d\d:\d\d · timeline · 1\/1 files/);
 });
 
 /** Starts a learner at a stage where switches are frequent, and speeds up the video. */
@@ -358,6 +358,28 @@ test('Hold E shows the English under the French', async () => {
   await expect.poll(revealed).toBe(1);
   await page.keyboard.up('e');
   await expect.poll(revealed).toBe(0);
+});
+
+test('the panel keeps the hour, even with no Netflix tab open', async () => {
+  const id = new URL(worker.url()).host;
+  const panel = await context.newPage();
+  await panel.goto(`chrome-extension://${id}/popup.html`);
+  await panel.getByRole('button', { name: '175 h' }).click();
+  await expect(panel.getByTestId('hour')).toContainText('175.0');
+  await panel.reload();
+  await expect(panel.getByTestId('hour')).toContainText('175.0');
+  expect((await savedLearner())!.wordsParsed).toBe(175 * 8400);
+});
+
+test('a jump applies to an open episode, and export saves the lines', async () => {
+  apiHandler = allFrench;
+  const page = await openWatch();
+  await expectCaption(page, /^en1 line/);
+  await page.evaluate(() => window.postMessage({ type: 'subtitle-learning:dev', action: 'jump', hour: 500 }, location.origin));
+  await expect.poll(async () => (await savedLearner())?.wordsParsed ?? 0).toBeGreaterThanOrEqual(500 * 8400);
+  const download = page.waitForEvent('download');
+  await page.evaluate(() => window.postMessage({ type: 'subtitle-learning:dev', action: 'export' }, location.origin));
+  expect((await download).suggestedFilename()).toBe('subtitle-lines-watch-1.json');
 });
 
 test('leaves Netflix alone when the title has no English track', async () => {
