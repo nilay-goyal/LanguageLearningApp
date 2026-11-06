@@ -19,6 +19,7 @@ import {
   EXPORT_LINES_MESSAGE,
   JUMP_KEY,
   type JumpRequest,
+  LAST_ERROR_KEY,
   LEARNER_KEY,
   PACE_KEY,
   RELAX_TICKS_KEY,
@@ -41,6 +42,9 @@ const SYNC_SAMPLES = 200;
 /** While no subtitle file has arrived, how often to retry and for how many times (5 minutes covers pre-roll ads). */
 const RECOVER_EVERY_MS = 4000;
 const MAX_RECOVERIES = 75;
+/** After a failure, wait this long and try again, a limited number of times. */
+const RESTART_AFTER_MS = 5000;
+const MAX_RESTARTS = 5;
 /** Hold this key to see the English line under the French. */
 const REVEAL_KEY = 'e';
 
@@ -52,6 +56,7 @@ export class CaptionController {
   private store = new CueStore();
   private running = false;
   private failed = false;
+  private restarts = 0;
   /** The title has no English track, so Netflix is left entirely alone. */
   private passthrough = false;
   private episode = location.pathname;
@@ -182,6 +187,15 @@ export class CaptionController {
     console.warn('[subtitle-learning] caption layer stopped:', error);
     this.failed = true;
     this.teardown();
+    // Once the extension itself has been reloaded, this copy can't recover.
+    if (!browser.runtime?.id) return;
+    void browser.storage.local.set({ [LAST_ERROR_KEY]: `${new Date().toISOString().slice(11, 19)} · ${String(error)}` });
+    if (this.restarts++ < MAX_RESTARTS) {
+      setTimeout(() => {
+        this.failed = false;
+        this.start();
+      }, RESTART_AFTER_MS);
+    }
   }
 
   private guard(fn: () => void): void {
@@ -212,7 +226,7 @@ export class CaptionController {
    * arrives, keep asking; if English already looks on, make Netflix fetch it again.
    */
   private recoverTrack(): void {
-    if (this.store.totalChunks > 0 || this.passthrough || !this.watchedVideo) return;
+    if (this.store.totalChunks > 0 || !this.watchedVideo) return;
     if (!location.pathname.startsWith('/watch') || this.recoveries >= MAX_RECOVERIES) return;
     const now = performance.now();
     if (now - this.lastRecovery < RECOVER_EVERY_MS) return;
@@ -254,7 +268,9 @@ export class CaptionController {
       if (data?.type === TRACK_STATUS_MESSAGE) {
         log('track status:', data.status);
         this.trackStatus = data.status;
-        this.passthrough = data.status === 'no-english';
+        // A track list can lack English for a moment, such as during an ad. Only a
+        // title with no subtitle file at all is left alone, and that keeps being rechecked.
+        this.passthrough = data.status === 'no-english' && this.store.totalChunks === 0;
         return;
       }
       if (data?.type !== TTML_MESSAGE) return;
@@ -266,6 +282,7 @@ export class CaptionController {
       // before the URL changes), which skips the short trailers on the browse page.
       if (!location.pathname.startsWith('/watch') && !isEpisodeLength(cues)) return;
       if (this.store.addChunk(cues)) {
+        this.passthrough = false;
         log(`file ${this.store.totalChunks}: ${cues.length} cues, ${cues[0]?.begin.toFixed(2)}–${cues.at(-1)?.end.toFixed(2)} s, video at ${data.currentTime?.toFixed(2)} s`);
       }
     } catch (error) {

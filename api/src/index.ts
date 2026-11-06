@@ -1,5 +1,6 @@
-// The translation API. It keeps the Anthropic key server-side, caches each episode's
-// translations, and stops spending at a daily cap. No subtitle text is logged.
+// The translation API. It keeps the provider keys server-side, stores translations
+// per line (so batches finishing together can't overwrite each other), and stops
+// spending at a daily cap. No subtitle text is logged or stored in English.
 
 import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
@@ -14,15 +15,13 @@ export interface Env {
   CLIENT_TOKEN: string;
   MODEL?: string;
   DAILY_BUDGET_USD?: string;
-  CACHE: KVNamespace;
+  DB: D1Database;
 }
 
 const MAX_LINES = 60;
 const MAX_LINE_CHARS = 500;
 const DEFAULT_MODEL = 'gpt-6.1-terra';
 const DEFAULT_DAILY_BUDGET = 5;
-/** Budget counters only need to outlive their day. */
-const BUDGET_TTL_SECONDS = 3 * 24 * 3600;
 
 const RequestSchema = z.object({
   videoId: z.string().min(1).max(40),
@@ -45,10 +44,7 @@ const RequestSchema = z.object({
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 
-const budgetKey = () => `budget:${new Date().toISOString().slice(0, 10)}`;
-
-/** The cache holds French, positions and lemmas for an episode, keyed by line hash, never English. */
-const cacheKey = (lang: string, videoId: string) => `v${PROMPT_VERSION}:${lang}:${videoId}`;
+const today = () => new Date().toISOString().slice(0, 10);
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -65,14 +61,15 @@ export default {
       return json({ error: 'bad_request' }, 400);
     }
 
-    const key = cacheKey(body.lang, body.videoId);
-    const episode = (await env.CACHE.get<Record<string, LineResult>>(key, 'json')) ?? {};
-    const missing = body.lines.filter((line) => !episode[line.hash]);
+    const hashes = [...new Set(body.lines.map((line) => line.hash))];
+    const stored = await env.DB.prepare(
+      `SELECT hash, result FROM translations WHERE version = ? AND lang = ? AND video = ? AND hash IN (${hashes.map(() => '?').join(',')})`,
+    )
+      .bind(PROMPT_VERSION, body.lang, body.videoId, ...hashes)
+      .all<{ hash: string; result: string }>();
     const results: Record<string, LineResult> = {};
-    for (const line of body.lines) {
-      const hit = episode[line.hash];
-      if (hit) results[line.hash] = hit;
-    }
+    for (const row of stored.results) results[row.hash] = JSON.parse(row.result) as LineResult;
+    const missing = body.lines.filter((line) => !results[line.hash]);
     const stats: TranslateResponse['stats'] = {
       cached: body.lines.length - missing.length,
       translated: 0,
@@ -83,7 +80,7 @@ export default {
     if (missing.length === 0) return json({ results, stats } satisfies TranslateResponse);
 
     const budget = Number(env.DAILY_BUDGET_USD) || DEFAULT_DAILY_BUDGET;
-    const spent = Number(await env.CACHE.get(budgetKey())) || 0;
+    const spent = (await env.DB.prepare('SELECT usd FROM spend WHERE day = ?').bind(today()).first<number>('usd')) ?? 0;
     if (spent >= budget) return json({ error: 'over_budget' } satisfies OverBudgetResponse, 429);
 
     const model = env.MODEL || DEFAULT_MODEL;
@@ -106,7 +103,17 @@ export default {
       return json({ error: 'upstream' }, 502);
     }
 
-    await env.CACHE.put(budgetKey(), String(spent + batch.costUsd), { expirationTtl: BUDGET_TTL_SECONDS });
+    const writes = [
+      env.DB.prepare('INSERT INTO spend (day, usd) VALUES (?, ?) ON CONFLICT (day) DO UPDATE SET usd = usd + excluded.usd').bind(today(), batch.costUsd),
+    ];
+    // Refused or unreadable batches are not kept, so they can be tried again.
+    if (!batch.refused && !batch.unreadable) {
+      const insert = env.DB.prepare('INSERT OR REPLACE INTO translations (version, lang, video, hash, result) VALUES (?, ?, ?, ?, ?)');
+      for (const [hash, result] of Object.entries(batch.results)) {
+        writes.push(insert.bind(PROMPT_VERSION, body.lang, body.videoId, hash, JSON.stringify(result)));
+      }
+    }
+    await env.DB.batch(writes);
     Object.assign(results, batch.results);
     Object.assign(stats, {
       translated: missing.length,
@@ -114,8 +121,6 @@ export default {
       refused: batch.refused,
       costUsd: batch.costUsd,
     });
-    // Refused or unreadable batches are not cached, so they can be tried again.
-    if (!batch.refused && !batch.unreadable) await env.CACHE.put(key, JSON.stringify({ ...episode, ...batch.results }));
 
     return json({ results, stats } satisfies TranslateResponse);
   },

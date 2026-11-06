@@ -21,9 +21,10 @@ export interface SessionDeps {
   save(state: EngineState): void;
 }
 
-/** Lines per request. The first is small, so French starts soon after an episode does. */
-const BATCH_LINES = 40;
+/** Lines per request, and how many run side by side. The first is smallest, so French starts soon after an episode does. */
+const BATCH_LINES = 20;
 const FIRST_BATCH_LINES = 10;
+const MAX_IN_FLIGHT = 3;
 /** How many lines S6r plans past the playhead. */
 const PLAN_AHEAD_LINES = 80;
 const LOOKAHEAD_LINES = 99;
@@ -68,7 +69,8 @@ export class LearningSession {
   private results = new Map<string, LineResult>();
   private attempts = new Map<string, number>();
   private glossary: Record<string, string> = {};
-  private inFlight = false;
+  private inFlight = 0;
+  private pending = new Set<string>();
   private retryAt = 0;
   private stopped: 'over_budget' | 'unconfigured' | null = null;
 
@@ -214,7 +216,7 @@ export class LearningSession {
 
   /** Requests the next lines without a translation, starting at the playhead. */
   private pump(t: number, now: number): void {
-    if (this.inFlight || this.stopped || now < this.retryAt) return;
+    if (this.inFlight >= MAX_IN_FLIGHT || this.stopped || now < this.retryAt) return;
     const start = this.firstLineAfter(t);
     const batch = this.nextBatch(start, this.requests === 0 ? FIRST_BATCH_LINES : BATCH_LINES);
     if (batch.length === 0) return;
@@ -231,10 +233,13 @@ export class LearningSession {
       }),
     };
 
-    this.inFlight = true;
+    const hashes = request.lines.map((l) => l.hash);
+    for (const hash of hashes) this.pending.add(hash);
+    this.inFlight++;
     this.requests++;
     void this.deps.translate(request).then((outcome) => {
-      this.inFlight = false;
+      this.inFlight--;
+      for (const hash of hashes) this.pending.delete(hash);
       if (outcome.ok) {
         this.accept(outcome.response, batch);
         return;
@@ -256,7 +261,7 @@ export class LearningSession {
     const seen = new Set<string>();
     const consider = (i: number) => {
       const line = this.lines[i]!;
-      if (this.isReady(line) || seen.has(line.hash)) return;
+      if (this.isReady(line) || seen.has(line.hash) || this.pending.has(line.hash)) return;
       seen.add(line.hash);
       batch.push(i);
     };

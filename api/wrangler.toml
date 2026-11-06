@@ -7,6 +7,8 @@ compatibility_flags = ["nodejs_compat"]
 DAILY_BUDGET_USD = "5"
 MODEL = "gpt-6.1-terra"
 
-[[kv_namespaces]]
-binding = "CACHE"
-id = "17842e0082144bb5ae5b6e5c60de0707"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "subtitle-learning"
+database_id = ""

@@ -10,6 +10,7 @@ import {
   isEnabledValue,
   JUMP_KEY,
   type JumpRequest,
+  LAST_ERROR_KEY,
   LEARNER_KEY,
   PACE_KEY,
   RELAX_TICKS_KEY,
@@ -51,9 +52,11 @@ function Panel() {
   const [pace, setPace] = useState(1);
   const [status, setStatus] = useState('Checking...');
   const [exported, setExported] = useState('');
+  const [lastError, setLastError] = useState('');
 
   useEffect(() => {
-    void browser.storage.local.get([ENABLED_KEY, LEARNER_KEY, PACE_KEY]).then((s) => {
+    void browser.storage.local.get([ENABLED_KEY, LEARNER_KEY, PACE_KEY, LAST_ERROR_KEY]).then((s) => {
+      setLastError(String(s[LAST_ERROR_KEY] ?? ''));
       setEnabled(isEnabledValue(s[ENABLED_KEY]));
       setHour(((s[LEARNER_KEY] as { wordsParsed?: number } | undefined)?.wordsParsed ?? 0) / WORDS_PER_HOUR);
       setPace(Number(s[PACE_KEY]) || 1);
@@ -123,6 +126,7 @@ function Panel() {
             <button onClick={() => void exportLines()}>Export lines</button>
           </div>
           {exported && <small data-testid="exported">{exported}</small>}
+          {lastError && <small>Last problem: {lastError}</small>}
           <small>French is shown in a warm tint. Hold E on Netflix, with French on screen, to see the English under it.</small>
         </>
       )}

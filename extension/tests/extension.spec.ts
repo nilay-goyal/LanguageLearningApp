@@ -246,7 +246,7 @@ test('shows the version on the development label', async () => {
   const page = await openWatch();
   await expectCaption(page, /^en1 line/);
   const label = await page.evaluate(() => document.getElementById('subtitle-learning-root')!.shadowRoot!.querySelector<HTMLElement>('[data-testid="debug-label"]')!.innerText);
-  expect(label).toMatch(/^v0\.3\.1 \d\d-\d\d \d\d:\d\d · timeline · 1\/1 files/);
+  expect(label).toMatch(/^v0\.3\.2 \d\d-\d\d \d\d:\d\d · timeline · 1\/1 files/);
 });
 
 /** Starts a learner at a stage where switches are frequent, and speeds up the video. */
@@ -336,7 +336,8 @@ test('stops asking and stays English when over budget', async () => {
   const page = await openAtStage(400, 1);
   await expectCaption(page, /^en1 line/);
   await page.waitForTimeout(6000);
-  expect(apiCalls).toBe(1);
+  // Up to the number of batches that run side by side, then it stops.
+  expect(apiCalls).toBeLessThanOrEqual(3);
   expect((await measureSync(page, 'en1', 2000)).wrong).toEqual([]);
 });
 
@@ -380,6 +381,44 @@ test('a jump applies to an open episode, and export saves the lines', async () =
   const download = page.waitForEvent('download');
   await page.evaluate(() => window.postMessage({ type: 'subtitle-learning:dev', action: 'export' }, location.origin));
   expect((await download).suggestedFilename()).toBe('subtitle-lines-watch-1.json');
+});
+
+test('runs batches side by side, without repeating lines', async () => {
+  const seen: string[][] = [];
+  let inFlight = 0;
+  let peak = 0;
+  apiHandler = async (body) => {
+    seen.push(body.lines.map((l: any) => l.hash));
+    peak = Math.max(peak, ++inFlight);
+    await new Promise((r) => setTimeout(r, 1500));
+    inFlight--;
+    return allFrench(body);
+  };
+  await openWatch();
+  await expect.poll(() => seen.length, { timeout: 15_000 }).toBeGreaterThanOrEqual(4);
+  expect(peak).toBe(3);
+  expect(seen[0]).toHaveLength(10);
+  const all = seen.flat();
+  expect(new Set(all).size).toBe(all.length);
+});
+
+test('a brief "no English" report during playback does not remove captions', async () => {
+  const page = await openWatch();
+  await expectCaption(page, /^en1 line/);
+  await page.evaluate(() => window.postMessage({ type: 'subtitle-learning:track-status', status: 'no-english' }, location.origin));
+  await page.waitForTimeout(500);
+  expect((await measureSync(page, 'en1', 3000)).wrong).toEqual([]);
+});
+
+test('recovers by itself after a temporary failure', async () => {
+  const page = await openWatch();
+  await expectCaption(page, /^en1 line/);
+  await page.evaluate(() => { document.documentElement.dataset.subtitleLearningFail = '1'; });
+  await expect.poll(() => nativeOpacity(page)).toBe('1');
+  await page.evaluate(() => { delete document.documentElement.dataset.subtitleLearningFail; });
+  await expect.poll(() => nativeOpacity(page), { timeout: 15_000 }).toBe('0');
+  await expectCaption(page, /^en1 line/);
+  expect(await worker.evaluate(() => chrome.storage.local.get('lastError').then((s) => s.lastError as string))).toContain('forced failure');
 });
 
 test('leaves Netflix alone when the title has no English track', async () => {

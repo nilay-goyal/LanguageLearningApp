@@ -12,6 +12,8 @@ export const PACE_KEY = 'pace';
 export const RELAX_TICKS_KEY = 'relaxTicks';
 /** A request from the dev panel to move the learner: { hour, reset, nonce }. */
 export const JUMP_KEY = 'jump';
+/** What last stopped the caption layer, for the dev panel: "time · message". */
+export const LAST_ERROR_KEY = 'lastError';
 /** Development only: { url, token } to use instead of the built-in API settings. */
 export const API_OVERRIDE_KEY = 'apiOverride';
 
