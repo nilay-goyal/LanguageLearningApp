@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fakeWatchPage, type FakeOptions, LINE_LENGTH, LINE_SPACING, subtitleFile, TOP_LINE } from './fakeNetflix';
 
-declare const chrome: { storage: { local: { set(items: object): Promise<void> } } };
+declare const chrome: { storage: { local: { set(items: object): Promise<void>; get(key: string): Promise<Record<string, any>> } } };
 
 const EXTENSION = resolve('.output/chrome-mv3-dev');
 /** Allowed gap between the video clock and the caption on screen. */
@@ -352,10 +352,12 @@ test('Hold E shows the English under the French', async () => {
     await expect.poll(hasFrench, { timeout: 30_000 }).toBe(true);
     await page.evaluate(() => { document.querySelector('video')!.pause(); });
   }
+  const revealed = () => page.evaluate(() => document.getElementById('subtitle-learning-root')!.shadowRoot!.querySelectorAll('.reveal').length);
+  expect(await revealed()).toBe(0);
   await page.keyboard.down('e');
-  await expect.poll(() => captionText(page)).toMatch(/en1 line \d+/);
+  await expect.poll(revealed).toBe(1);
   await page.keyboard.up('e');
-  await expect.poll(() => captionText(page)).not.toMatch(/en1 line \d+$/);
+  await expect.poll(revealed).toBe(0);
 });
 
 test('leaves Netflix alone when the title has no English track', async () => {
