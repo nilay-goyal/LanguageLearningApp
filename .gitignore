@@ -9,3 +9,10 @@ dist/
 drive-download-*/
 test-results/
 playwright-report/
+# Secrets and signing keys
+*.pem
+*.key
+*.p12
+*.crx
+.secrets
+.wrangler/
