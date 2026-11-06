@@ -1,0 +1,24 @@
+{
+  "name": "subtitle-learning-extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wxt",
+    "build": "wxt build",
+    "zip": "wxt zip",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "postinstall": "wxt prepare"
+  },
+  "dependencies": {
+    "preact": "11.0.2"
+  },
+  "devDependencies": {
+    "@preact/preset-vite": "2.10.6",
+    "happy-dom": "21.0.4",
+    "typescript": "7.0.2",
+    "vitest": "5.0.5",
+    "wxt": "0.21.5"
+  }
+}

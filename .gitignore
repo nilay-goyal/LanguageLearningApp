@@ -1,0 +1,9 @@
+node_modules/
+.output/
+.wxt/
+dist/
+.dev.vars
+.env
+.env.*
+*.log
+drive-download-*/
