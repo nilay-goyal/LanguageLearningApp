@@ -11,4 +11,4 @@ MODEL = "gpt-6.1-terra"
 [[d1_databases]]
 binding = "DB"
 database_name = "subtitle-learning"
-database_id = ""
+database_id = "f8663b32-4f5d-4527-9bb6-edc5b040b26b"
