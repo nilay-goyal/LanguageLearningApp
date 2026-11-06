@@ -19,6 +19,7 @@ const JUDGE_MODEL = 'claude-opus-5-5';
 const BATCH = 40;
 const BLIND_ITEMS = 100;
 const PARALLEL = 6;
+const FULL_SAMPLE = 40;
 
 const Verdicts = z.object({
   verdicts: z.array(z.object({ id: z.string(), verdict: z.enum(['NATURAL', 'ACCEPTABLE', 'GRAMMAR_ERROR', 'MISLEADING', 'INCOMPREHENSIBLE']), reason: z.string() })),
@@ -88,7 +89,12 @@ function shuffled<T>(values: T[], key: (v: T) => string): T[] {
 async function main() {
   const client = new Anthropic({ apiKey: loadApiKey() });
   const files = readdirSync(DATA_DIR).filter((f) => f.startsWith('out-')).map((f) => join(DATA_DIR, f));
-  const items = files.flatMap(collect);
+  // Every phrase, plus a sample of full lines per model: phrases are where models differ.
+  const items = files.flatMap((file) => {
+    const all = collect(file);
+    const full = shuffled(all.filter((i) => i.kind === 'full'), (i) => i.id).slice(0, FULL_SAMPLE);
+    return [...all.filter((i) => i.kind !== 'full'), ...full];
+  });
   const verdicts = new Map<string, { verdict: string; reason: string }>();
   let cost = 0;
 

@@ -4,11 +4,13 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
 import type { LineResult, OverBudgetResponse, TranslateResponse } from '../../shared/protocol';
+import { OpenAIError, translateBatchOpenAI } from './openai';
 import { PROMPT_VERSION } from './prompt';
 import { type ModelId, translateBatch } from './translate';
 
 export interface Env {
   ANTHROPIC_API_KEY: string;
+  OPENAI_API_KEY?: string;
   CLIENT_TOKEN: string;
   MODEL?: string;
   DAILY_BUDGET_USD?: string;
@@ -17,7 +19,7 @@ export interface Env {
 
 const MAX_LINES = 60;
 const MAX_LINE_CHARS = 500;
-const DEFAULT_MODEL: ModelId = 'claude-opus-5-5';
+const DEFAULT_MODEL = 'gpt-6.1-terra';
 const DEFAULT_DAILY_BUDGET = 5;
 /** Budget counters only need to outlive their day. */
 const BUDGET_TTL_SECONDS = 3 * 24 * 3600;
@@ -84,12 +86,17 @@ export default {
     const spent = Number(await env.CACHE.get(budgetKey())) || 0;
     if (spent >= budget) return json({ error: 'over_budget' } satisfies OverBudgetResponse, 429);
 
-    const model = (env.MODEL as ModelId) || DEFAULT_MODEL;
-    const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
+    const model = env.MODEL || DEFAULT_MODEL;
     let batch;
     try {
-      batch = await translateBatch(client, model, body.lang, missing, body.glossary);
+      batch = model.startsWith('claude-')
+        ? await translateBatch(new Anthropic({ apiKey: env.ANTHROPIC_API_KEY }), model as ModelId, body.lang, missing, body.glossary)
+        : await translateBatchOpenAI(env.OPENAI_API_KEY ?? '', model, body.lang, missing, body.glossary);
     } catch (error) {
+      if (error instanceof OpenAIError) {
+        console.error('OpenAI API error', error.status);
+        return json({ error: error.status === 429 ? 'rate_limited' : 'upstream' }, error.status === 429 ? 429 : 502);
+      }
       if (error instanceof Anthropic.RateLimitError) return json({ error: 'rate_limited' }, 429);
       if (error instanceof Anthropic.APIError) {
         console.error('Claude API error', error.status);

@@ -5,6 +5,7 @@ compatibility_flags = ["nodejs_compat"]
 
 [vars]
 DAILY_BUDGET_USD = "5"
+MODEL = "gpt-6.1-terra"
 
 [[kv_namespaces]]
 binding = "CACHE"
