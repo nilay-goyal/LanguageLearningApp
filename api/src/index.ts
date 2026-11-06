@@ -218,7 +218,7 @@ export default {
         } catch {
           return json({ error: 'bad_request' }, 400);
         }
-        const result = url.pathname === '/v1/events' ? await storeEvents(env.DB, tester, input) : await storeReport(env.DB, tester, input);
+        const result = url.pathname === '/v1/events' ? await storeEvents(env.DB, tester, input) : await storeReport(env.DB, tester, input, PROMPT_VERSION);
         return result.ok ? json(result) : json({ error: result.status === 429 ? 'rate_limited' : 'bad_request' }, result.status);
       }
     }

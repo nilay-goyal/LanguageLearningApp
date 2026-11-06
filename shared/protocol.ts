@@ -145,7 +145,6 @@ export interface ReportRequest {
   french: string;
   english: string;
   hour: number;
-  version: number;
 }
 
 export interface GradeRequest {

@@ -14,7 +14,6 @@ const ReportSchema = z.object({
   french: z.string().min(1).max(300),
   english: z.string().min(1).max(700),
   hour: z.number().finite().min(0).max(100_000),
-  version: z.number().int(),
 });
 
 /** Different testers who must report a unit before it is hidden for everyone. */
@@ -24,7 +23,7 @@ const DAY_MS = 24 * 3600 * 1000;
 
 export type ReportResult = { ok: true; suppressed: boolean } | { ok: false; status: 400 | 429 };
 
-export async function storeReport(db: D1Database, tester: Tester, input: unknown, now = Date.now()): Promise<ReportResult> {
+export async function storeReport(db: D1Database, tester: Tester, input: unknown, version: number, now = Date.now()): Promise<ReportResult> {
   const parsed = ReportSchema.safeParse(input);
   if (!parsed.success) return { ok: false, status: 400 };
   const r = parsed.data;
@@ -37,7 +36,7 @@ export async function storeReport(db: D1Database, tester: Tester, input: unknown
 
   await db
     .prepare('INSERT INTO reports (tester, at, lang, video, hash, unit_start, unit_end, tier, french, english, hour, version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .bind(tester.id, now, r.lang, r.video, r.hash, r.start, r.end, r.tier, r.french, r.english, r.hour, r.version)
+    .bind(tester.id, now, r.lang, r.video, r.hash, r.start, r.end, r.tier, r.french, r.english, r.hour, version)
     .run();
 
   const testers = await db
@@ -48,7 +47,7 @@ export async function storeReport(db: D1Database, tester: Tester, input: unknown
   if (suppressed) {
     await db
       .prepare('INSERT OR IGNORE INTO suppressed (version, lang, video, hash, unit_start, unit_end) VALUES (?, ?, ?, ?, ?, ?)')
-      .bind(r.version, r.lang, r.video, r.hash, r.start, r.end)
+      .bind(version, r.lang, r.video, r.hash, r.start, r.end)
       .run();
   }
   return { ok: true, suppressed };

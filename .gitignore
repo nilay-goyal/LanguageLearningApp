@@ -17,3 +17,5 @@ playwright-report/
 .secrets
 .wrangler/
 api/eval/data/
+
+.output-test/

@@ -4,10 +4,11 @@
 // it has really played. A line with no translation in time simply stays English, and
 // a line already on screen never changes.
 
-import type { LineResult, TranslateRequest, TranslateResponse } from '../../../shared/protocol';
+import { type LineResult, type ReportRequest, speedBin, type TranslateRequest, type TranslateResponse } from '../../../shared/protocol';
 import { FRENCH, type Tier, WORDS_PER_HOUR } from '../engine/constants';
 import { targetDensity } from '../engine/schedule';
 import { type Candidate, cloneState, createState, type EngineLine, type EngineState, hoursOf, processLine, retainedCount } from '../engine/s6r';
+import { emptyStore, type ExposureStore, offerHeldOut, recordShown, unitKey } from '../study/exposure';
 import type { Cue, Run } from '../subtitles/ttml';
 import { hybridRuns } from './hybrid';
 import { cueKeyOf, type Line } from './lines';
@@ -19,6 +20,8 @@ export type TranslateOutcome =
 export interface SessionDeps {
   translate(request: TranslateRequest): Promise<TranslateOutcome>;
   save(state: EngineState): void;
+  /** Called now and then with what the learner has been shown, for the recall checks. */
+  saveExposure?(store: ExposureStore): void;
 }
 
 /** Lines per request, and how many run side by side. The first is smallest, so French starts soon after an episode does. */
@@ -35,6 +38,19 @@ const RETRY_MS = 5000;
 const SAVE_EVERY_LINES = 10;
 const GLOSSARY_SIZE = 80;
 const GLOSSARY_MAX_WORDS = 3;
+
+/** What happened in the lines that played since it was last collected, for the usage events. */
+export interface SessionStats {
+  lines: number;
+  words: number;
+  l2Words: number;
+  linesFrench: number;
+  late: number;
+  tiers: [number, number, number, number];
+  bySpeed: [number, number, number, number];
+}
+
+const freshStats = (): SessionStats => ({ lines: 0, words: 0, l2Words: 0, linesFrench: 0, late: 0, tiers: [0, 0, 0, 0], bySpeed: [0, 0, 0, 0] });
 
 interface Planned {
   placed: Candidate[];
@@ -86,13 +102,22 @@ export class LearningSession {
   private costUsd = 0;
   private cachedLines = 0;
   private requests = 0;
+  private exposure: ExposureStore;
+  private exposureDirty = false;
+  private reported: Set<string>;
+  private stats = freshStats();
+  private lateIds = new Set<string>();
 
   pace = 1;
   relaxTicks = false;
+  /** How fast the episode's speech is, in words per minute of caption time. */
+  paceWpm = 0;
 
-  constructor(private deps: SessionDeps, initial?: EngineState) {
+  constructor(private deps: SessionDeps, initial?: EngineState, exposure?: ExposureStore, reported: string[] = []) {
     this.state = initial ?? createState();
     this.planState = cloneState(this.state);
+    this.exposure = exposure ?? emptyStore();
+    this.reported = new Set(reported);
   }
 
   setEpisode(videoId: string): void {
@@ -103,6 +128,7 @@ export class LearningSession {
     this.requests = 0;
     this.glossary = {};
     this.shown.clear();
+    this.lateIds.clear();
     this.setLines([], 0);
   }
 
@@ -120,6 +146,13 @@ export class LearningSession {
     });
     this.restartPlan(this.firstLineAfter(t));
     this.lastT = t;
+    let words = 0;
+    let seconds = 0;
+    for (const line of lines) {
+      words += line.words.length;
+      seconds += Math.max(0.5, line.end - line.begin);
+    }
+    this.paceWpm = seconds > 0 ? words / (seconds / 60) : 0;
   }
 
   /** Moves the learner, from the dev panel. */
@@ -158,7 +191,10 @@ export class LearningSession {
   private planLine(index: number, result: LineResult | undefined): void {
     const line = this.lines[index]!;
     const upcomingWords = this.lines.slice(index + 1, index + 1 + LOOKAHEAD_LINES).map((l) => l.words.length);
-    const placed = processLine(this.planState, toEngineLine(line, result), {
+    const engineLine = toEngineLine(line, result);
+    // A unit this tester reported is never offered to them again.
+    if (this.reported.size > 0) engineLine.candidates = engineLine.candidates.filter((c) => !this.reported.has(this.keyOf(line, c)));
+    const placed = processLine(this.planState, engineLine, {
       profile: FRENCH,
       pace: this.pace,
       upcomingWords,
@@ -173,8 +209,15 @@ export class LearningSession {
     while (this.planIndex < limit) {
       const line = this.lines[this.planIndex]!;
       // A line already on screen stays as it is, even if its translation just arrived.
-      if (line.begin <= t) this.planLine(this.planIndex, undefined);
-      else if (this.isReady(line)) this.planLine(this.planIndex, this.results.get(line.hash));
+      if (line.begin <= t) {
+        // The line began before its translation arrived: French couldn't be shown in time.
+        const waiting = !this.results.has(line.hash) && !this.stopped && (this.attempts.get(line.hash) ?? 0) < MAX_ATTEMPTS;
+        if (waiting && !this.lateIds.has(line.id)) {
+          this.lateIds.add(line.id);
+          this.stats.late++;
+        }
+        this.planLine(this.planIndex, undefined);
+      } else if (this.isReady(line)) this.planLine(this.planIndex, this.results.get(line.hash));
       else return;
     }
   }
@@ -185,14 +228,110 @@ export class LearningSession {
       const plan = this.planned.get(this.frontier);
       if (!plan) return;
       this.state = plan.after;
-      this.shown.set(this.lines[this.frontier]!.id, plan.placed);
+      const played = this.lines[this.frontier]!;
+      this.shown.set(played.id, plan.placed);
+      this.recordPlayed(played, plan.placed);
       this.planned.delete(this.frontier);
       this.frontier++;
       if (++this.unsaved >= SAVE_EVERY_LINES) this.flush();
     }
   }
 
+  /** Counts a line that has really played, for the usage numbers and the recall checks. */
+  private recordPlayed(line: Line, placed: Candidate[]): void {
+    const shown = this.visible(line, placed);
+    const s = this.stats;
+    s.lines++;
+    s.words += line.words.length;
+    const wps = line.words.length / Math.max(0.5, line.end - line.begin);
+    for (const c of shown) {
+      s.tiers[c.tier - 1]!++;
+      s.l2Words += c.end - c.start;
+      s.bySpeed[speedBin(wps)]!++;
+    }
+    if (shown.length > 0) s.linesFrench++;
+
+    const now = Date.now();
+    for (const c of shown) {
+      if (c.tier <= 3 && c.text) recordShown(this.exposure, { french: c.text, english: line.words.slice(c.start, c.end).join(' '), lemmas: c.lemmas }, now);
+    }
+    // Phrases the speed limit could have used but didn't: the pool the never-shown controls come from.
+    for (const unit of this.results.get(line.hash)?.units ?? []) {
+      const tier = tierForLength(unit.end - unit.start);
+      if (!tier || tier > 3 || placed.some((c) => c.tier !== 4 && c.start === unit.start && c.end === unit.end)) continue;
+      offerHeldOut(this.exposure, { french: unit.text, english: line.words.slice(unit.start, unit.end).join(' '), lemmas: unit.lemmas }, Math.random);
+    }
+    this.exposureDirty = true;
+  }
+
+  /** What happened since this was last called, and starts counting again. */
+  drainStats(): SessionStats {
+    const stats = this.stats;
+    this.stats = freshStats();
+    return stats;
+  }
+
+  /** The totals for the episode so far, for its summary event. */
+  episodeSummary(): { lines: number; late: number } {
+    return { lines: this.lines.length, late: this.lateIds.size };
+  }
+
+  private keyOf(line: Line, c: Candidate): string {
+    const english = c.tier === 4 ? line.text : line.words.slice(c.start, c.end).join(' ');
+    return unitKey(c.text ?? '', english);
+  }
+
+  private visible(line: Line, placed: Candidate[]): Candidate[] {
+    return this.reported.size === 0 ? placed : placed.filter((c) => !this.reported.has(this.keyOf(line, c)));
+  }
+
+  private placedFor(line: Line): Candidate[] {
+    const index = this.indexOf.get(line.id)!;
+    return this.visible(line, this.shown.get(line.id) ?? this.planned.get(index)?.placed ?? []);
+  }
+
+  /** The French units on a cue, with the line each belongs to. */
+  unitsFor(cue: Cue): { line: Line; unit: Candidate }[] {
+    const lines = this.byCue.get(cueKeyOf(cue)) ?? [];
+    return lines.flatMap((line) => this.placedFor(line).map((unit) => ({ line, unit })));
+  }
+
+  /** The highest tier of French on a cue and how fast it is spoken, or null if there is none. */
+  frenchInfo(cue: Cue): { tier: 1 | 2 | 3 | 4; wps: number } | null {
+    let best: { tier: 1 | 2 | 3 | 4; wps: number } | null = null;
+    for (const { line, unit } of this.unitsFor(cue)) {
+      if (!best || unit.tier > best.tier) best = { tier: unit.tier, wps: line.words.length / Math.max(0.5, line.end - line.begin) };
+    }
+    return best;
+  }
+
+  /** A tester pressed R. Hides the French on this cue from now on, and returns what to report. */
+  report(cue: Cue, video: string): ReportRequest[] {
+    const items = this.unitsFor(cue);
+    const requests = items.map(({ line, unit }): ReportRequest => ({
+      lang: 'fr',
+      video,
+      hash: line.hash,
+      start: unit.tier === 4 ? 0 : unit.start,
+      end: unit.tier === 4 ? -1 : unit.end,
+      tier: unit.tier,
+      french: unit.text ?? '',
+      english: line.text,
+      hour: this.hourNow,
+    }));
+    for (const { line, unit } of items) this.reported.add(this.keyOf(line, unit));
+    return requests;
+  }
+
+  reportedKeys(): string[] {
+    return [...this.reported];
+  }
+
   flush(): void {
+    if (this.exposureDirty) {
+      this.exposureDirty = false;
+      this.deps.saveExposure?.(this.exposure);
+    }
     if (this.unsaved === 0) return;
     this.unsaved = 0;
     this.deps.save(this.state);
@@ -296,8 +435,7 @@ export class LearningSession {
     if (!lines) return null;
     let changed = false;
     const out = lines.map((line): Run[] => {
-      const index = this.indexOf.get(line.id)!;
-      const placed = this.shown.get(line.id) ?? this.planned.get(index)?.placed ?? [];
+      const placed = this.placedFor(line);
       if (placed.length === 0) return [{ text: (line.dash ? '- ' : '') + line.text }];
       changed = true;
       return hybridRuns(line, placed);
