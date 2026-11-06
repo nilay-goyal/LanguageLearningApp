@@ -29,8 +29,38 @@ describe('TTML parsing', () => {
       begin: 2.24,
       end: 4.5,
       text: 'Where did you\nput the keys?',
+      lines: [[{ text: 'Where did you' }], [{ text: 'put the keys?' }]],
       region: 'region0',
     });
+  });
+
+  it('keeps italics from attributes and referenced styles', () => {
+    const cues = parseTtml(`<tt xmlns="http://www.w3.org/ns/ttml" xmlns:tts="http://www.w3.org/ns/ttml#styling">
+      <head><styling><style xml:id="it" tts:fontStyle="italic"/></styling></head>
+      <body><div>
+        <p begin="0t" end="10t"><span tts:fontStyle="italic">Off screen</span> on screen</p>
+        <p begin="0t" end="10t" style="it">All of it</p>
+      </div></body></tt>`);
+    expect(cues[0]!.lines).toEqual([[{ text: 'Off screen', italic: true }, { text: ' on screen' }]]);
+    expect(cues[0]!.text).toBe('Off screen on screen');
+    expect(cues[1]!.lines).toEqual([[{ text: 'All of it', italic: true }]]);
+  });
+
+  it('reads placement from regions', () => {
+    const cues = parseTtml(`<tt xmlns="http://www.w3.org/ns/ttml" xmlns:tts="http://www.w3.org/ns/ttml#styling">
+      <head><layout>
+        <region xml:id="high" tts:origin="10% 5%" tts:extent="80% 10%"/>
+        <region xml:id="low" tts:origin="10% 80%" tts:extent="80% 10%"/>
+      </layout></head>
+      <body><div>
+        <p begin="0t" end="10t" region="high">Top</p>
+        <p begin="0t" end="10t" region="low">Bottom</p>
+        <p begin="0t" end="10t" region="missing">Unknown</p>
+      </div></body></tt>`);
+    expect(cues[0]!.position).toEqual({ x: 0.5, y: 'top', offset: 0.05 });
+    expect(cues[1]!.position?.y).toBe('bottom');
+    expect(cues[1]!.position?.offset).toBeCloseTo(0.1, 6);
+    expect(cues[2]!.position).toBeUndefined();
   });
 
   it('applies a chunk offset', () => {

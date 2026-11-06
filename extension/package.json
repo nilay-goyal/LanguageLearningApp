@@ -9,12 +9,14 @@
     "zip": "wxt zip",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "postinstall": "wxt prepare"
+    "postinstall": "wxt prepare",
+    "test:e2e": "wxt build --mode development && playwright test"
   },
   "dependencies": {
     "preact": "11.0.2"
   },
   "devDependencies": {
+    "@playwright/test": "1.65.0",
     "@preact/preset-vite": "2.10.6",
     "happy-dom": "21.0.4",
     "typescript": "7.0.2",

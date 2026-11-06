@@ -8,6 +8,7 @@ export default defineConfig({
     name: 'Subtitle Learning (dev)',
     description: 'Learn French or Spanish while you watch. Your subtitles change a little at a time.',
     permissions: ['storage'],
+    action: { default_title: 'Subtitle Learning: click to switch on or off' },
     host_permissions: ['https://www.netflix.com/*'],
   },
 });

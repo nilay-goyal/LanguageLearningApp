@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { CueStore } from './cueStore';
 import type { Cue } from './ttml';
 
-const cue = (begin: number, end: number, text: string): Cue => ({ id: text, begin, end, text });
+const cue = (begin: number, end: number, text: string): Cue => ({ id: text, begin, end, text, lines: [[{ text }]] });
 const episodeFile = (name: string) => [cue(10, 12, `${name} opening`), cue(20, 23, 'Okay.'), cue(1200, 1203, `${name} ending`)];
 
 describe('CueStore anchoring', () => {
@@ -37,6 +37,54 @@ describe('CueStore anchoring', () => {
     const store = new CueStore();
     expect(store.addChunk([cue(1, 2, 'Hi')])).toBe(true);
     expect(store.addChunk([cue(1, 2, 'Hi')])).toBe(false);
+  });
+});
+
+describe('CueStore when the timeline moves', () => {
+  const longFile = [
+    cue(10, 12, 'First line'),
+    cue(20, 22, 'Second line'),
+    cue(30, 32, 'Third line'),
+    cue(40, 42, 'Fourth line'),
+    cue(1200, 1202, 'Last line'),
+  ];
+
+  it('moves the file after repeated disagreement, such as an ad break', () => {
+    const store = new CueStore();
+    store.addChunk(longFile);
+    expect(store.anchor('First line', 10.02)).toBe(0);
+    // A 90 s ad break shifted everything after this point.
+    expect(store.anchor('Second line', 110)).toBeNull();
+    expect(store.anchor('Third line', 120)).toBeNull();
+    expect(store.anchor('Fourth line', 130)).toBeCloseTo(90, 6);
+    expect(store.activeAt(131).map((c) => c.text)).toEqual(['Fourth line']);
+  });
+
+  it('is not moved by one stray caption', () => {
+    const store = new CueStore();
+    store.addChunk(longFile);
+    expect(store.anchor('First line', 10.02)).toBe(0);
+    expect(store.anchor('Third line', 500)).toBeNull();
+    expect(store.anchor('Second line', 20.01)).toBe(0);
+    expect(store.activeAt(21).map((c) => c.text)).toEqual(['Second line']);
+  });
+});
+
+describe('CueStore lookup', () => {
+  it('finds overlapping cues, and none in gaps', () => {
+    const store = new CueStore();
+    store.addChunk([cue(0, 100, 'Long sign'), cue(10, 12, 'Dialogue'), cue(150, 151, 'x'), cue(1000, 1001, 'End')]);
+    expect(store.activeAt(11).map((c) => c.text)).toEqual(['Long sign', 'Dialogue']);
+    expect(store.activeAt(50).map((c) => c.text)).toEqual(['Long sign']);
+    expect(store.activeAt(120)).toEqual([]);
+    expect(store.activeAt(12)).toHaveLength(1);
+  });
+
+  it('reports how far a caption is from its cue', () => {
+    const store = new CueStore();
+    store.addChunk([cue(10, 12, 'Okay.'), cue(500, 502, 'Okay.'), cue(1000, 1001, 'End')]);
+    expect(store.syncError('Okay.', 500.04)).toBeCloseTo(0.04, 6);
+    expect(store.syncError('Never said', 10)).toBeNull();
   });
 });
 
