@@ -41,7 +41,9 @@ export const CAPTION_CSS = `
   line-height: 1.22;
   text-align: center;
 }
-.line { white-space: pre-wrap; }
+.line { white-space: pre-wrap; text-wrap: balance; }
+.l2 { color: #f2e3be; }
+.reveal { display: block; font-size: 0.72em; opacity: 0.8; margin-top: 0.15em; }
 .debug {
   position: absolute;
   top: 12px;
@@ -72,7 +74,10 @@ export function Caption({ blocks, box, style, debug }: CaptionProps) {
         >
           {block.lines.map((line, l) => (
             <div class="line" key={l}>
-              {line.map((run, r) => (run.italic ? <i key={r}>{run.text}</i> : <span key={r}>{run.text}</span>))}
+              {line.map((run, r) => {
+                const cls = run.l2 ? 'l2' : run.reveal ? 'reveal' : undefined;
+                return run.italic ? <i key={r} class={cls}>{run.text}</i> : <span key={r} class={cls}>{run.text}</span>;
+              })}
             </div>
           ))}
         </div>

@@ -3,6 +3,10 @@
 export interface Run {
   text: string;
   italic?: boolean;
+  /** Shown in the language being learned. */
+  l2?: boolean;
+  /** The English line revealed while holding the key. */
+  reveal?: boolean;
 }
 
 /** Where a subtitle file places a cue, as fractions of the picture. */

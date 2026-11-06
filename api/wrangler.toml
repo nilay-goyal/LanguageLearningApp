@@ -1,0 +1,7 @@
+name = "subtitle-learning-api"
+main = "src/index.ts"
+compatibility_date = "2026-10-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+DAILY_BUDGET_USD = "5"

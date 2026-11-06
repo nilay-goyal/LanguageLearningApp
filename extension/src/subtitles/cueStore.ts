@@ -192,6 +192,11 @@ export class CueStore {
     return this.chunks.length;
   }
 
+  /** Changes whenever cue times or the set of placed files change. */
+  layoutKey(): string {
+    return this.chunks.filter((c) => c.offset !== null).map((c) => `${c.key.length}:${c.cues.length}@${c.offset}`).join('|');
+  }
+
   /** Short state summary for the development label. */
   describe(): string {
     const placed = this.chunks.filter((c) => c.offset !== null);

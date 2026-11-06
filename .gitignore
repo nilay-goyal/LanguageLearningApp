@@ -16,3 +16,4 @@ playwright-report/
 *.crx
 .secrets
 .wrangler/
+api/eval/data/

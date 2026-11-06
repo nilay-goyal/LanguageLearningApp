@@ -12,8 +12,19 @@ import {
 } from '../messages';
 import { Caption, CAPTION_CSS, type CaptionStyle, DEFAULT_CAPTION_STYLE } from '../overlay/Caption';
 import { buildBlocks, chooseSource, type Placement, syncSummary } from '../overlay/display';
+import { buildLines } from '../learning/lines';
+import { deserializeState, LearningSession, serializeState, type TranslateOutcome } from '../learning/session';
+import {
+  EXPORT_LINES_MESSAGE,
+  JUMP_KEY,
+  type JumpRequest,
+  LEARNER_KEY,
+  PACE_KEY,
+  RELAX_TICKS_KEY,
+  TRANSLATE_MESSAGE,
+} from '../settings';
 import { CueStore, isEpisodeLength } from '../subtitles/cueStore';
-import { parseTtml, ttmlLanguage } from '../subtitles/ttml';
+import { type Cue, parseTtml, type Run, ttmlLanguage } from '../subtitles/ttml';
 
 const NATIVE_SELECTOR = '.player-timedtext';
 const NATIVE_TEXT_SELECTOR = '.player-timedtext-text-container';
@@ -27,6 +38,8 @@ const SYNC_SAMPLES = 200;
 /** While no subtitle file has arrived, how often to retry and for how many times (5 minutes covers pre-roll ads). */
 const RECOVER_EVERY_MS = 4000;
 const MAX_RECOVERIES = 75;
+/** Hold this key to see the English line under the French. */
+const REVEAL_KEY = 'e';
 
 const log = (...args: unknown[]) => {
   if (import.meta.env.DEV) console.debug('[subtitle-learning]', ...args);
@@ -57,6 +70,10 @@ export class CaptionController {
   private trackStatus: TrackStatusMessage['status'] | null = null;
   private lastRecovery = 0;
   private recoveries = 0;
+  private session: LearningSession | null = null;
+  private lastLayout: string | null = null;
+  private layoutBuild = 0;
+  private revealing = false;
 
   private hideStyle = document.createElement('style');
   private host = document.createElement('div');
@@ -71,6 +88,51 @@ export class CaptionController {
     shadow.append(css, this.mount);
     // Files are collected even while off, so switching on mid-episode works at once.
     window.addEventListener('message', (event) => this.onMessage(event));
+    window.addEventListener('keydown', (event) => this.onKey(event, true), true);
+    window.addEventListener('keyup', (event) => this.onKey(event, false), true);
+    window.addEventListener('pagehide', () => this.session?.flush());
+    browser.storage.onChanged.addListener((changes, area) => {
+      if (area !== 'local') return;
+      if (changes[PACE_KEY] && this.session) this.session.pace = Number(changes[PACE_KEY].newValue) || 1;
+      if (changes[RELAX_TICKS_KEY] && this.session) this.session.relaxTicks = changes[RELAX_TICKS_KEY].newValue === true;
+      const jump = changes[JUMP_KEY]?.newValue as JumpRequest | undefined;
+      if (jump) this.session?.jump(jump.hour, jump.reset, this.watchedVideo?.currentTime ?? 0);
+    });
+    browser.runtime.onMessage.addListener((message: { type?: string }) => {
+      if (message?.type === EXPORT_LINES_MESSAGE) this.exportLines();
+    });
+    void this.loadLearner();
+  }
+
+  private async loadLearner(): Promise<void> {
+    const stored = await browser.storage.local.get([LEARNER_KEY, PACE_KEY, RELAX_TICKS_KEY]);
+    const session = new LearningSession(
+      {
+        translate: (request) =>
+          browser.runtime.sendMessage({ type: TRANSLATE_MESSAGE, request }).catch((): TranslateOutcome => ({ ok: false, reason: 'failed' })),
+        save: (state) => void browser.storage.local.set({ [LEARNER_KEY]: serializeState(state) }),
+      },
+      deserializeState(stored[LEARNER_KEY]),
+    );
+    session.pace = Number(stored[PACE_KEY]) || 1;
+    session.relaxTicks = stored[RELAX_TICKS_KEY] === true;
+    this.session = session;
+  }
+
+  /** Dev panel: saves this episode's English lines to a local file, for the model eval. */
+  private exportLines(): void {
+    const lines = this.session?.exportLines() ?? [];
+    const blob = new Blob([JSON.stringify({ video: this.episode, lines })], { type: 'application/json' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `subtitle-lines${this.episode.replaceAll('/', '-')}.json`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  }
+
+  private onKey(event: KeyboardEvent, down: boolean): void {
+    if (event.key.toLowerCase() !== REVEAL_KEY || event.ctrlKey || event.metaKey || event.altKey) return;
+    this.revealing = down;
   }
 
   start(): void {
@@ -85,6 +147,7 @@ export class CaptionController {
 
   stop(): void {
     if (!this.running) return;
+    this.session?.flush();
     this.teardown();
     this.command('restore-track');
   }
@@ -155,6 +218,7 @@ export class CaptionController {
     this.syncErrors = [];
     this.settle();
     this.beginTrackRecovery();
+    this.lastLayout = null;
     log('episode changed');
     if (this.running && location.pathname.startsWith('/watch')) this.command('ensure-english');
   }
@@ -271,6 +335,33 @@ export class CaptionController {
     this.watchNative();
     this.sampleNativeStyle();
     this.recoverTrack();
+    this.syncSession();
+  }
+
+  /** Keeps the learning session on the current episode and playback position. */
+  private syncSession(): void {
+    const session = this.session;
+    const video = this.watchedVideo;
+    const videoId = location.pathname.match(/^\/watch\/(\d+)/)?.[1];
+    if (!session || !video || !videoId) return;
+    session.setEpisode(videoId);
+
+    const layout = this.store.layoutKey();
+    if (layout !== this.lastLayout) {
+      this.lastLayout = layout;
+      const build = ++this.layoutBuild;
+      void buildLines(this.store.timeline()).then((lines) => {
+        if (build === this.layoutBuild) session.setLines(lines, video.currentTime);
+      });
+    }
+    const counting = !video.paused && !video.seeking && document.visibilityState === 'visible';
+    session.tick(video.currentTime, counting);
+  }
+
+  private displayLines(cue: Cue): Run[][] {
+    const hybrid = this.session?.linesFor(cue);
+    if (!hybrid) return cue.lines;
+    return this.revealing ? [...hybrid, [{ text: cue.text.replace(/\n/g, ' '), reveal: true }]] : hybrid;
   }
 
   private frame = (): void => {
@@ -297,12 +388,13 @@ export class CaptionController {
     const active = this.store.activeAt(t);
     const source = chooseSource(active, this.nativeText, settling);
     const debug = import.meta.env.DEV ? this.debugLabel(source, t) : undefined;
+    const shown = active.map((cue) => ({ ...cue, lines: this.displayLines(cue) }));
 
-    const key = JSON.stringify([source, active.map((c) => c.id + c.begin), this.nativeText, this.nativePlacement, this.box, this.style, debug]);
+    const key = JSON.stringify([source, shown.map((c) => c.lines), this.nativeText, this.nativePlacement, this.box, this.style, debug]);
     if (key === this.lastKey) return;
     this.lastKey = key;
 
-    const blocks = buildBlocks(source, active, this.nativeText, this.nativePlacement, this.bottomOffset);
+    const blocks = buildBlocks(source, shown, this.nativeText, this.nativePlacement, this.bottomOffset);
     render(<Caption blocks={blocks} box={this.box} style={this.style} debug={debug} />, this.mount);
 
     // Stay inside the fullscreen element so the layer survives fullscreen.
@@ -316,6 +408,6 @@ export class CaptionController {
     const sync = syncSummary(this.syncErrors);
     const syncText = sync ? `sync ${sync.median}/${sync.p95} ms` : 'sync –';
     const build = `v${browser.runtime.getManifest().version} ${__BUILD_TIME__}`;
-    return `${build} · ${source} · ${this.store.describe()} · track ${this.trackStatus ?? '?'} · ${syncText} · ${t.toFixed(1)} s`;
+    return `${build} · ${source} · ${this.store.describe()} · track ${this.trackStatus ?? '?'} · ${syncText} · ${t.toFixed(1)} s${this.session ? ` · ${this.session.describe()}` : ''}`;
   }
 }

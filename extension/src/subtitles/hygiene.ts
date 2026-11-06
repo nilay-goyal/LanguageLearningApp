@@ -32,7 +32,21 @@ export function cleanCue(text: string): Segment[] {
 
 /** Non-punctuation word count, the unit the speed limit counts in. */
 export function countWords(text: string): number {
-  return (text.match(/[\p{L}\p{N}]+(?:['’][\p{L}]+)*/gu) ?? []).length;
+  return tokenize(text).length;
+}
+
+export interface Token {
+  /** Character positions in the text, end exclusive. */
+  start: number;
+  end: number;
+}
+
+/** Non-punctuation words, the same way the speed limit counts them. */
+export function tokenize(text: string): Token[] {
+  return Array.from(text.matchAll(/[\p{L}\p{N}]+(?:['’][\p{L}]+)*/gu), (m) => ({
+    start: m.index,
+    end: m.index + m[0].length,
+  }));
 }
 
 export async function lineHash(text: string): Promise<string> {

@@ -1,0 +1,115 @@
+// The translation API. It keeps the Anthropic key server-side, caches each episode's
+// translations, and stops spending at a daily cap. No subtitle text is logged.
+
+import Anthropic from '@anthropic-ai/sdk';
+import { z } from 'zod';
+import type { LineResult, OverBudgetResponse, TranslateResponse } from '../../shared/protocol';
+import { PROMPT_VERSION } from './prompt';
+import { type ModelId, translateBatch } from './translate';
+
+export interface Env {
+  ANTHROPIC_API_KEY: string;
+  CLIENT_TOKEN: string;
+  MODEL?: string;
+  DAILY_BUDGET_USD?: string;
+  CACHE: KVNamespace;
+}
+
+const MAX_LINES = 60;
+const MAX_LINE_CHARS = 500;
+const DEFAULT_MODEL: ModelId = 'claude-opus-5-5';
+const DEFAULT_DAILY_BUDGET = 5;
+/** Budget counters only need to outlive their day. */
+const BUDGET_TTL_SECONDS = 3 * 24 * 3600;
+
+const RequestSchema = z.object({
+  videoId: z.string().min(1).max(40),
+  lang: z.literal('fr'),
+  lines: z
+    .array(
+      z.object({
+        hash: z.string().min(8).max(128),
+        words: z.array(z.string().max(80)).min(1).max(80),
+        text: z.string().min(1).max(MAX_LINE_CHARS),
+        prev: z.string().max(MAX_LINE_CHARS).optional(),
+        next: z.string().max(MAX_LINE_CHARS).optional(),
+      }),
+    )
+    .min(1)
+    .max(MAX_LINES),
+  glossary: z.record(z.string().max(80), z.string().max(120)),
+});
+
+const json = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+
+const budgetKey = () => `budget:${new Date().toISOString().slice(0, 10)}`;
+
+/** The cache holds French, positions and lemmas for an episode, keyed by line hash, never English. */
+const cacheKey = (lang: string, videoId: string) => `v${PROMPT_VERSION}:${lang}:${videoId}`;
+
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    const url = new URL(request.url);
+    if (url.pathname !== '/v1/translate' || request.method !== 'POST') return json({ error: 'not_found' }, 404);
+    if (!env.CLIENT_TOKEN || request.headers.get('authorization') !== `Bearer ${env.CLIENT_TOKEN}`) {
+      return json({ error: 'unauthorized' }, 401);
+    }
+
+    let body;
+    try {
+      body = RequestSchema.parse(await request.json());
+    } catch {
+      return json({ error: 'bad_request' }, 400);
+    }
+
+    const key = cacheKey(body.lang, body.videoId);
+    const episode = (await env.CACHE.get<Record<string, LineResult>>(key, 'json')) ?? {};
+    const missing = body.lines.filter((line) => !episode[line.hash]);
+    const results: Record<string, LineResult> = {};
+    for (const line of body.lines) {
+      const hit = episode[line.hash];
+      if (hit) results[line.hash] = hit;
+    }
+    const stats: TranslateResponse['stats'] = {
+      cached: body.lines.length - missing.length,
+      translated: 0,
+      dropped: 0,
+      refused: false,
+      costUsd: 0,
+    };
+    if (missing.length === 0) return json({ results, stats } satisfies TranslateResponse);
+
+    const budget = Number(env.DAILY_BUDGET_USD) || DEFAULT_DAILY_BUDGET;
+    const spent = Number(await env.CACHE.get(budgetKey())) || 0;
+    if (spent >= budget) return json({ error: 'over_budget' } satisfies OverBudgetResponse, 429);
+
+    const model = (env.MODEL as ModelId) || DEFAULT_MODEL;
+    const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
+    let batch;
+    try {
+      batch = await translateBatch(client, model, body.lang, missing, body.glossary);
+    } catch (error) {
+      if (error instanceof Anthropic.RateLimitError) return json({ error: 'rate_limited' }, 429);
+      if (error instanceof Anthropic.APIError) {
+        console.error('Claude API error', error.status);
+        return json({ error: 'upstream' }, 502);
+      }
+      console.error('Translate failed');
+      return json({ error: 'upstream' }, 502);
+    }
+
+    await env.CACHE.put(budgetKey(), String(spent + batch.costUsd), { expirationTtl: BUDGET_TTL_SECONDS });
+    Object.assign(results, batch.results);
+    Object.assign(stats, {
+      translated: missing.length,
+      dropped: batch.dropped,
+      refused: batch.refused,
+      costUsd: batch.costUsd,
+    });
+    // A refused batch is not cached, so it can be retried if the prompt or model changes.
+    if (!batch.refused) await env.CACHE.put(key, JSON.stringify({ ...episode, ...batch.results }));
+
+    return json({ results, stats } satisfies TranslateResponse);
+  },
+};

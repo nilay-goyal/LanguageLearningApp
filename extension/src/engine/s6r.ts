@@ -30,6 +30,8 @@ export interface Candidate {
   lemmas: string[];
   /** Selector score for phrases; higher is better. */
   score?: number;
+  /** The French to show, when real translations are in use. */
+  text?: string;
 }
 
 export interface EngineLine {
@@ -61,6 +63,8 @@ export interface EngineOptions {
   upcomingWords?: number[];
   /** Called when a chosen unit is blocked, for diagnostics. */
   onBlock?: (reason: 'credit' | 'ticks' | 'cap', tier: Tier) => void;
+  /** Skips the tick gate. For test stages reached without having learned the words before them. */
+  ignoreTicks?: boolean;
 }
 
 export function createState(startHour = 0, seed = 1): EngineState {
@@ -228,7 +232,7 @@ export function processLine(s: EngineState, line: EngineLine, opts: EngineOption
     const needTicks = ticksNeeded(cand.lemmas, s.lemmaCounts);
 
     const creditOk = chosen === G ? s.credit > 0 : s.credit - L >= RESERVE[G ?? chosen];
-    const ticksOk = needTicks <= s.ticks;
+    const ticksOk = opts.ignoreTicks || needTicks <= s.ticks;
     const capOk = densityAllows(
       s,
       line.words,
@@ -244,7 +248,7 @@ export function processLine(s: EngineState, line: EngineLine, opts: EngineOption
 
     s.rng = pick.rng;
     s.credit -= L;
-    s.ticks -= needTicks;
+    if (!opts.ignoreTicks) s.ticks -= needTicks;
     for (const l of cand.lemmas) s.lemmaCounts.set(l, (s.lemmaCounts.get(l) ?? 0) + 1);
     s.ledger.push(chosen);
     if (s.ledger.length > LEDGER_SIZE) s.ledger.shift();

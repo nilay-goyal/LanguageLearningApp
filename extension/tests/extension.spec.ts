@@ -1,7 +1,9 @@
 // Loads the built extension into Chromium and runs it against the fake Netflix page.
 // Run with `npm run test:e2e`, which builds first.
 import { type BrowserContext, chromium, expect, type Page, test, type Worker } from '@playwright/test';
+import { createServer, type Server } from 'node:http';
 import { mkdtempSync, rmSync } from 'node:fs';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fakeWatchPage, type FakeOptions, LINE_LENGTH, LINE_SPACING, subtitleFile, TOP_LINE } from './fakeNetflix';
@@ -15,6 +17,33 @@ const SYNC_TOLERANCE = 0.1;
 let context: BrowserContext;
 let worker: Worker;
 let profile: string;
+let api: Server;
+/** What the mock API does with each request. Replace per test. */
+let apiHandler: (body: any) => { status: number; body: unknown } | Promise<{ status: number; body: unknown }>;
+let apiCalls = 0;
+let apiAuth: string | undefined;
+
+const stats = { cached: 0, translated: 1, dropped: 0, refused: false, costUsd: 0 };
+const noFrench = (body: any) => ({
+  status: 200,
+  body: { results: Object.fromEntries(body.lines.map((l: any) => [l.hash, { units: [], full: null }])), stats },
+});
+/** Every line gets a phrase and a full sentence. */
+const allFrench = (body: any) => ({
+  status: 200,
+  body: {
+    results: Object.fromEntries(
+      body.lines.map((l: any) => [
+        l.hash,
+        {
+          units: [{ start: 0, end: 2, text: 'la ligne', lemmas: ['le', 'ligne'], score: 2 }],
+          full: { text: `FR ${l.text}`, lemmas: ['phrase'] },
+        },
+      ]),
+    ),
+    stats,
+  },
+});
 
 test.beforeEach(async () => {
   profile = mkdtempSync(join(tmpdir(), 'subtitle-learning-'));
@@ -29,10 +58,28 @@ test.beforeEach(async () => {
     ],
   });
   worker = context.serviceWorkers()[0] ?? (await context.waitForEvent('serviceworker'));
+
+  apiHandler = noFrench;
+  apiCalls = 0;
+  api = createServer((req, res) => {
+    let raw = '';
+    req.on('data', (d) => (raw += d));
+    req.on('end', async () => {
+      apiCalls++;
+      apiAuth = req.headers.authorization;
+      const { status, body } = await apiHandler(JSON.parse(raw));
+      res.writeHead(status, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(body));
+    });
+  });
+  await new Promise<void>((done) => api.listen(0, '127.0.0.1', done));
+  const { port } = api.address() as AddressInfo;
+  await worker.evaluate((url) => chrome.storage.local.set({ apiOverride: { url, token: 'test-token' } }), `http://localhost:${port}`);
 });
 
 test.afterEach(async () => {
   await context.close();
+  api.close();
   rmSync(profile, { recursive: true, force: true });
 });
 
@@ -199,7 +246,116 @@ test('shows the version on the development label', async () => {
   const page = await openWatch();
   await expectCaption(page, /^en1 line/);
   const label = await page.evaluate(() => document.getElementById('subtitle-learning-root')!.shadowRoot!.querySelector<HTMLElement>('[data-testid="debug-label"]')!.innerText);
-  expect(label).toMatch(/^v0\.2\.0 \d\d-\d\d \d\d:\d\d · timeline · 1\/1 files/);
+  expect(label).toMatch(/^v0\.3\.0 \d\d-\d\d \d\d:\d\d · timeline · 1\/1 files/);
+});
+
+/** Starts a learner at a stage where switches are frequent, and speeds up the video. */
+async function openAtStage(hour: number, rate = 4): Promise<Page> {
+  await worker.evaluate(
+    (h) => chrome.storage.local.set({ relaxTicks: true, learner: { wordsParsed: h * 8400, credit: 0, ticks: 0, ledger: [], window: [], lastPartialEnd: null, lemmaCounts: {}, rng: 1 } }),
+    hour,
+  );
+  const page = await openWatch();
+  await page.evaluate((r) => { document.querySelector('video')!.playbackRate = r; }, rate);
+  return page;
+}
+
+const savedLearner = () => worker.evaluate(() => chrome.storage.local.get('learner').then((s) => s.learner as { wordsParsed: number; lemmaCounts: Record<string, number> } | undefined));
+
+test('shows French in the captions, tints partial lines, and sends the client token', async () => {
+  apiHandler = allFrench;
+  const page = await openAtStage(250);
+  await expect.poll(() => captionText(page), { timeout: 30_000 }).toMatch(/la ligne|^FR /i);
+  expect(apiAuth).toBe('Bearer test-token');
+  await expect
+    .poll(
+      () =>
+        page.evaluate(() => {
+          const l2 = document.getElementById('subtitle-learning-root')!.shadowRoot!.querySelector('.l2');
+          return l2 ? getComputedStyle(l2).color : null;
+        }),
+      { timeout: 30_000 },
+    )
+    .toBe('rgb(242, 227, 190)');
+});
+
+test('never changes a line while it is on screen', async () => {
+  apiHandler = async (body) => {
+    await new Promise((r) => setTimeout(r, 1500));
+    return allFrench(body);
+  };
+  const page = await openAtStage(400, 1);
+  const changes = await page.evaluate(
+    ({ shadow }) =>
+      new Promise<string[]>((done) => {
+        const read = new Function(`return (${shadow})()`) as () => string;
+        const video = document.querySelector('video')!;
+        const byLine = new Map<number, Set<string>>();
+        const end = performance.now() + 12_000;
+        (function tick() {
+          const t = video.currentTime;
+          const i = Math.floor(t / 3);
+          const within = t - i * 3;
+          const text = read();
+          if (within > 0.15 && within < 1.85 && text) {
+            const set = byLine.get(i) ?? new Set<string>();
+            set.add(text);
+            byLine.set(i, set);
+          }
+          if (performance.now() < end) requestAnimationFrame(tick);
+          else done([...byLine.values()].filter((s) => s.size > 1).map((s) => [...s].join(' -> ')));
+        })();
+      }),
+    { shadow: shadowText.toString() },
+  );
+  expect(changes).toEqual([]);
+});
+
+test('counts played lines once, and not again after skipping back', async () => {
+  apiHandler = allFrench;
+  const page = await openAtStage(100, 8);
+  await expect.poll(async () => (await savedLearner())?.wordsParsed ?? 0, { timeout: 30_000 }).toBeGreaterThan(100 * 8400 + 30);
+  await seek(page, 0.5);
+  await page.waitForTimeout(300);
+  await page.evaluate(() => { const v = document.querySelector('video')!; v.playbackRate = 1; });
+  const before = (await savedLearner())!.wordsParsed;
+  await page.waitForTimeout(4000);
+  expect((await savedLearner())!.wordsParsed).toBe(before);
+});
+
+test('keeps English captions and playback going when the API fails', async () => {
+  apiHandler = () => ({ status: 500, body: { error: 'upstream' } });
+  const page = await openAtStage(400, 1);
+  await expectCaption(page, /^en1 line/);
+  expect((await measureSync(page, 'en1', 4000)).wrong).toEqual([]);
+  expect(apiCalls).toBeGreaterThan(0);
+});
+
+test('stops asking and stays English when over budget', async () => {
+  apiHandler = () => ({ status: 429, body: { error: 'over_budget' } });
+  const page = await openAtStage(400, 1);
+  await expectCaption(page, /^en1 line/);
+  await page.waitForTimeout(6000);
+  expect(apiCalls).toBe(1);
+  expect((await measureSync(page, 'en1', 2000)).wrong).toEqual([]);
+});
+
+test('Hold E shows the English under the French', async () => {
+  apiHandler = allFrench;
+  const page = await openAtStage(500, 4);
+  const hasFrench = async () => /^FR |la ligne/i.test(await captionText(page));
+  await expect.poll(hasFrench, { timeout: 30_000 }).toBe(true);
+  await page.evaluate(() => { document.querySelector('video')!.pause(); });
+  if (!(await hasFrench())) {
+    // Paused between switches: play on to the next one.
+    await page.evaluate(() => document.querySelector('video')!.play());
+    await expect.poll(hasFrench, { timeout: 30_000 }).toBe(true);
+    await page.evaluate(() => { document.querySelector('video')!.pause(); });
+  }
+  await page.keyboard.down('e');
+  await expect.poll(() => captionText(page)).toMatch(/en1 line \d+/);
+  await page.keyboard.up('e');
+  await expect.poll(() => captionText(page)).not.toMatch(/en1 line \d+$/);
 });
 
 test('leaves Netflix alone when the title has no English track', async () => {
