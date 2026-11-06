@@ -5,3 +5,7 @@ compatibility_flags = ["nodejs_compat"]
 
 [vars]
 DAILY_BUDGET_USD = "5"
+
+[[kv_namespaces]]
+binding = "CACHE"
+id = "17842e0082144bb5ae5b6e5c60de0707"
